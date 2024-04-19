@@ -1,0 +1,33 @@
+[package]
+name = "dotdeploy"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.79"
+chrono = "0.4.37"
+clap = { version = "4.4.18" , features = ["derive"] }
+deadpool-sqlite = { version = "0.8.0", features = ["rt_tokio_1"] }
+handlebars = "5.1.0"
+log = "0.4.20"
+nix = { version = "0.28.0", features = ["user", "hostname"] }
+rusqlite = { version = "0.31.0", features = ["bundled", "chrono"] }
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+sha2 = "0.10.8"
+shellexpand = "3.1.0"
+simplelog = "0.12.1"
+tempfile = "3.10.0"
+thiserror = "1.0.58"
+tokio = { version = "1.36.0", features = ["full"] }
+toml = "0.8.10"
+which = "6.0.0"
+
+[profile.release]
+strip = true
+opt-level = 3
+codegen-units = 1
+lto = true
+panic = "abort"
