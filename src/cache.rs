@@ -1439,17 +1439,13 @@ mod tests {
         let store = store_setup_helper("link").await?;
 
         let temp_path = tempdir()?;
-        let file = tokio::fs::File::create(temp_path.path().join("foo.txt")).await?;
+
+        tokio::fs::write(temp_path.path().join("foo.txt"), b"Hello World!").await?;
         tokio::fs::set_permissions(
             temp_path.path().join("foo.txt"),
             std::fs::Permissions::from_mode(0o666),
         )
         .await?;
-        {
-            let mut writer = BufWriter::new(file);
-            writer.write("Hello World!".as_bytes()).await?;
-            writer.flush().await?;
-        }
 
         // Backup file
         store
