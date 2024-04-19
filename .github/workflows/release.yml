@@ -29,6 +29,10 @@ jobs:
         shell: bash
         run: |
           cargo build --release --locked --verbose --target ${{ matrix.target }}
+      - name: Check
+        shell: bash
+        run: |
+          ls -ahl target/*    
       - name: Upload asset
         uses: actions/upload-release-asset@v1.0.2
         env:
