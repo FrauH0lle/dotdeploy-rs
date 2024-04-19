@@ -1475,8 +1475,8 @@ mod tests {
         let group = meta.gid();
 
         assert_eq!(format!("{:o}", mode), format!("{:o}", 33206));
-        assert_eq!(user, 1000);
-        assert_eq!(group, 1000);
+        assert_eq!(user, std::env::var("EUID")?.parse::<u32>()?);
+        assert_eq!(group, std::env::var("EGID")?.parse::<u32>()?);
 
         Ok(())
     }
