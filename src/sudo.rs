@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::io::{stdout, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -79,6 +80,7 @@ fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
 /// * Returns `Ok(())` if the `sudo` command executes successfully. Returns an `Err` if the command
 /// fails to execute or completes with a non-success status.
 fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
+    stdout().flush()?;
     let status = Command::new(sudo)
         .args(flags)
         // This allows sudo to read the password from the terminal
