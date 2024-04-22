@@ -1,3 +1,4 @@
+use std::io::{stdin, stdout, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 /// Helper functions used in various places
 use std::path::{Path, PathBuf};
@@ -7,6 +8,29 @@ use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::sudo;
+
+//
+// User input
+
+/// Ask for simple confirmation from user.
+pub fn ask_boolean(prompt: &str) -> bool {
+    // enter the loop at least once
+    let mut buf = String::from("a");
+    while !(buf.to_lowercase().starts_with('y')
+        || buf.to_lowercase().starts_with('n')
+        || buf.is_empty())
+    {
+        eprintln!("{}", prompt);
+        buf.clear();
+        stdout().flush().expect("Failed to flush stdout");
+        stdin()
+            .read_line(&mut buf)
+            .expect("Failed to read line from stdin");
+    }
+
+    // If empty defaults to no
+    buf.to_lowercase().starts_with('y')
+}
 
 //
 // Files
@@ -94,6 +118,50 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
         }
         Err(e) => Err(e).with_context(|| format!("Falied to delete {:?}", &path.as_ref()))?,
     }
+}
+
+pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P) -> Result<()> {
+    let mut path = path
+        .as_ref()
+        .parent()
+        .with_context(|| format!("Failed to get parent of {:?}", path.as_ref()))?;
+
+    while path.is_dir()
+        && match path.read_dir() {
+            Ok(_) => path.read_dir().map(|mut i| i.next().is_none()).unwrap_or(false),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                sudo::sudo_exec_success(
+                    "test",
+                    &[
+                        "-n",
+                        &format!("\"$(find {} -maxdepth 0 -empty)\"", path.display()),
+                    ],
+                    None,
+                )
+                .await?
+            }
+            Err(e) => Err(e).with_context(|| format!("Failed to read directory {:?}", path))?,
+        }
+    {
+        if ask_boolean(&format!(
+            "Directory at {:?} is now empty. Delete [y/N]? ",
+            path
+        )) {
+            match fs::remove_dir(path).await {
+                Ok(_) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    sudo::sudo_exec("rmdir", &[&path_to_string(&path)?], None).await?
+                }
+                Err(e) => {
+                    Err(e).with_context(|| format!("Failed to remove directory {:?}", path))?
+                }
+            }
+        }
+        path = path
+            .parent()
+            .with_context(|| format!("Failed to get parent of {:?}", path))?;
+    }
+    Ok(())
 }
 
 /// Calculate sha256 checksum with sudo

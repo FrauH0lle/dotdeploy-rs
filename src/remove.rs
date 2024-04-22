@@ -11,6 +11,7 @@ async fn remove_file<S: AsRef<str>>(
     if common::check_file_exists(file.as_ref()).await? {
         // Delete file
         common::delete_file(file.as_ref()).await?;
+        debug!("Removed {:?}", file.as_ref());
 
         // Check if we have a backup in the user store
         if stores
@@ -32,6 +33,8 @@ async fn remove_file<S: AsRef<str>>(
                 .remove_backup(file.as_ref())
                 .await
                 .map_err(|e| e.into_anyhow())?;
+
+            info!("Restored {:?} from backup", file.as_ref());
         }
 
         // Check if we have a backup in the system store
@@ -52,6 +55,8 @@ async fn remove_file<S: AsRef<str>>(
                     .remove_backup(file.as_ref())
                     .await
                     .map_err(|e| e.into_anyhow())?;
+
+                info!("Restored {:?} from backup", file.as_ref());
             }
         }
     }
@@ -125,16 +130,26 @@ pub(crate) async fn remove(
         warn!("This shit better works...");
         let mut set = tokio::task::JoinSet::new();
 
-        for file in files {
+        // Remove the file async
+        for file in files.clone() {
             let stores_clone = Arc::clone(&stores); // Clone the Arc
             let context_clone = Arc::clone(&context);
             set.spawn(async move {
-                remove_file(file.destination, stores_clone).await;
+                match remove_file(&file.destination, stores_clone).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => bail!("Failed to remove {:?}\n {:?}", &file.destination, e),
+                }
             });
         }
 
         while let Some(res) = set.join_next().await {
-            res?;
+            res??;
+        }
+
+        // But remove the parent directories sync!
+        for file in files {
+            // Remove directory and parents if empty
+            common::delete_parents(&file.destination).await?;
         }
 
         if let Some(v) = main_actions {
