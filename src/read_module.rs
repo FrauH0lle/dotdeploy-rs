@@ -512,11 +512,6 @@ impl ModuleConfig {
         let mut to_expand = vec![];
         if let Some(files) = &config.files {
             for (dest, conf) in files.iter() {
-                println!(
-                    "dest is {:?}",
-                    dest.to_str()
-                        .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
-                );
                 if dest
                     .to_str()
                     .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?

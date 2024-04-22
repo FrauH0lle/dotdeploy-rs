@@ -33,8 +33,6 @@ pub(crate) async fn deploy(
             }
 
             if let Some(files) = phase.files {
-                println!("files are: {:?}", files);
-
                 let mut set = tokio::task::JoinSet::new();
 
                 for file in files {

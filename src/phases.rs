@@ -622,7 +622,6 @@ pub(crate) async fn assign_module_config(
     // Iterate through each module to assign its configurations to the appropriate phase and stage.
     // BTreeSet does not have drain so we do it manually. Should be fast enough.
     for mut module in modules.into_iter() {
-        println!("{:?}", module);
         // Evaluate module configurations against the provided context
         module.config.eval_conditionals(&context).with_context(|| {
             format!(

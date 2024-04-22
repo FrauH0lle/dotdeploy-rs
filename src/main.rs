@@ -181,10 +181,7 @@ async fn run() -> Result<bool> {
                     &mut generators,
                 )
                 .await?;
-                // println!("{:#?}", phases);
-                // for (phase_name, phase) in phases {
-                //     println!("phase: {:#?}, content: {:#?}", phase_name, phase)
-                // };
+
                 crate::deploy::deploy(
                     phases,
                     Arc::clone(&stores),
