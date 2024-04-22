@@ -248,17 +248,14 @@ where
     let source: Option<String> = Option::deserialize(deserializer)?;
     source
         .map(|s| {
-            shellexpand::full(
-                format!(
-                    "{}{}{}",
-                    std::env::var("DOD_CURRENT_MODULE").expect(
-                        "env variable `DOD_CURRENT_MODULE` should be set by `modules::add_module`"
-                    ),
-                    std::path::MAIN_SEPARATOR_STR,
-                    &s
-                )
-                .as_str(),
-            )
+            shellexpand::full(&format!(
+                "{}{}{}",
+                std::env::var("DOD_CURRENT_MODULE").expect(
+                    "env variable `DOD_CURRENT_MODULE` should be set by `modules::add_module`"
+                ),
+                std::path::MAIN_SEPARATOR_STR,
+                &s
+            ))
             .map(|expanded| PathBuf::from(expanded.as_ref()))
         })
         .transpose()
@@ -279,7 +276,13 @@ where
             map.into_iter()
                 .map(|(key, value)| {
                     shellexpand::full(&key)
-                        .map(|expanded| (PathBuf::from(expanded.as_ref()), value))
+                        // Replace ##dot## with '.' in destinations
+                        .map(|expanded| {
+                            (
+                                PathBuf::from(expanded.as_ref().replace("##dot##", ".")),
+                                value,
+                            )
+                        })
                         .map_err(serde::de::Error::custom)
                 })
                 .collect()
@@ -643,7 +646,9 @@ impl ActionConfig {
                     let mut cmd = std::process::Command::new(&file)
                         .args(args)
                         .spawn()
-                        .with_context(|| format!("Failed to run {:?} with args {:?}", file, args))?;
+                        .with_context(|| {
+                            format!("Failed to run {:?} with args {:?}", file, args)
+                        })?;
 
                     // It's streaming here
                     let status = cmd.wait()?;
