@@ -135,12 +135,12 @@ async fn run() -> Result<bool> {
                 let stores = Arc::new((
                     crate::cache::init_user_store(None)
                         .await
-                        .map_err(|e| e.into_anyhow())?,
+                        .map_err(|e| e.into_anyhow()).context("Failed to initialize user store")?,
                     if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
                         Some(
                             crate::cache::init_system_store()
                                 .await
-                                .map_err(|e| e.into_anyhow())?,
+                                .map_err(|e| e.into_anyhow()).context("Failed to initialize system store")?,
                         )
                     } else {
                         None

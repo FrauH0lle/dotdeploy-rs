@@ -123,10 +123,18 @@ pub(crate) struct StoreBackup {
 // Run maintanence and try to close the connection gracefully, thus the temporary `-wal` and `-shm`
 // are cleaned up.
 pub(crate) fn close_connection<P: AsRef<Path>>(path: P) -> Result<()> {
-    while path.as_ref().join("store.sqlite-shm").exists() {
-        while path.as_ref().join("store.sqlite-wal").exists() {
+    while path
+        .as_ref()
+        .parent()
+        .map_or_else(|| false, |p| p.join("store.sqlite-shm").exists())
+    {
+        while path
+            .as_ref()
+            .parent()
+            .map_or_else(|| false, |p| p.join("store.sqlite-wal").exists())
+        {
             let conn =
-                deadpool_sqlite::rusqlite::Connection::open(path.as_ref().join("store.sqlite"))?;
+                deadpool_sqlite::rusqlite::Connection::open(&path)?;
             conn.pragma_update(
                 Some(deadpool_sqlite::rusqlite::DatabaseName::Main),
                 "auto_vacuum",
@@ -272,22 +280,20 @@ impl Store {
         // Check if database directory exists and if not, create it.
         self.create_dir().await.map_err(|e| SQLiteError::Other(e))?;
 
+        // Set full path
+        self.path = self.path.join("store.sqlite");
+
         // Set database options
-        let pool = Config::new(&self.path.join("store.sqlite"))
+        let pool = Config::new(&self.path)
             .create_pool(Runtime::Tokio1)
             .with_context(|| {
-                format!(
-                    "Failed to create pool for store database {:?}",
-                    &self.path.join("store.sqlite")
-                )
+                format!("Failed to create pool for store database {:?}", &self.path)
             })?;
 
-        let conn = pool.get().await.with_context(|| {
-            format!(
-                "Failed to connect to store database {:?}",
-                &self.path.join("store.sqlite")
-            )
-        })?;
+        let conn = pool
+            .get()
+            .await
+            .with_context(|| format!("Failed to connect to store database {:?}", &self.path))?;
 
         // Enable WAL mode and auto-vacuum before any tables are created
         conn.interact(move |conn| -> Result<(), SQLiteError> {
@@ -949,8 +955,13 @@ impl Store {
         path: P,
     ) -> Result<bool, SQLiteError> {
         let path_str = common::path_to_string(path)?;
+        let store_path = self.path.clone();
 
-        debug!("Looking for backup of {}", &path_str);
+        debug!(
+            "Looking for backup of {} in {}",
+            &path_str,
+            &store_path.display()
+        );
 
         let conn = &self.get_con().await?;
 
@@ -961,11 +972,15 @@ impl Store {
 
                 match stmt.query_row(params![path_str], |row| row.get::<_, String>(0)) {
                     Ok(_) => {
-                        debug!("Found backup of {}", &path_str);
+                        debug!("Found backup of {} in {}", &path_str, &store_path.display());
                         Ok(true)
                     }
                     Err(e) if e == deadpool_sqlite::rusqlite::Error::QueryReturnedNoRows => {
-                        debug!("Could not find backup of {}", &path_str);
+                        debug!(
+                            "Could not find backup of {} in {}",
+                            &path_str,
+                            &store_path.display()
+                        );
                         Ok(false)
                     }
                     Err(e) => Err(SQLiteError::QueryError(e)),
@@ -1180,12 +1195,9 @@ pub(crate) async fn init_system_store() -> Result<Store, SQLiteError> {
     let sys_store = store.init().await;
     match sys_store {
         Ok(()) => {
-            tokio::fs::set_permissions(
-                &store.path.join("store.sqlite"),
-                std::fs::Permissions::from_mode(0o666),
-            )
-            .await
-            .map_err(|e| SQLiteError::Other(e.into()))?;
+            tokio::fs::set_permissions(&store.path, std::fs::Permissions::from_mode(0o666))
+                .await
+                .map_err(|e| SQLiteError::Other(e.into()))?;
             Ok(store)
         }
         Err(e) => {
