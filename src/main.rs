@@ -55,15 +55,27 @@ pub(crate) fn display_error(error: anyhow::Error) {
 }
 
 async fn run() -> Result<bool> {
+    let cli = cli::get_cli();
+
     simplelog::TermLogger::init(
-        simplelog::LevelFilter::Trace,
-        simplelog::Config::default(),
+        match cli.verbosity {
+            0 => simplelog::LevelFilter::Info,
+            1 => simplelog::LevelFilter::Debug,
+            2 => simplelog::LevelFilter::Trace,
+            _ => unreachable!(),
+        },
+        simplelog::ConfigBuilder::new()
+            .set_time_level(simplelog::LevelFilter::Debug)
+            .set_location_level(simplelog::LevelFilter::Debug)
+            .set_target_level(simplelog::LevelFilter::Debug)
+            .set_thread_level(simplelog::LevelFilter::Debug)
+            .set_level_padding(simplelog::LevelPadding::Left)
+            .add_filter_allow("dotdeploy".to_string())
+            .build(),
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Auto,
     )
     .unwrap();
-
-    let cli = cli::get_cli();
 
     // The Dotdeploy config should be on the top level as it contains information like the paths
     // which are needed often.

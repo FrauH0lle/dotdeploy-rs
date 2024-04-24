@@ -5,6 +5,9 @@ use clap::{Parser, Subcommand};
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Commands,
+    /// Verbosity level - specify up to 2 times to get more detailed output.
+    #[clap(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
+    pub verbosity: u8,
 }
 
 #[derive(Subcommand)]
@@ -16,6 +19,7 @@ pub(crate) enum Commands {
 }
 
 pub(crate) fn get_cli() -> Cli {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.verbosity = std::cmp::min(2, cli.verbosity);
     cli
 }
