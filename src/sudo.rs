@@ -1,16 +1,24 @@
 use std::ffi::OsStr;
-use std::io::{stdout, Write};
+// use std::io::{stdout, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+// use std::sync::{Arc, Mutex};
+use tokio::io::{stdout, AsyncWriteExt};
+use tokio::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use lazy_static::lazy_static;
 
 // Adapted from https://github.com/Morganamilo/paru/blob/5355012aa3529014145b8940dd0c62b21e53095a/src/exec.rs#L144
 
-/// Global variable, available to all threads, indicating if sudo is running.
-static SUDO_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+lazy_static! {
+    /// Global variable, available to all threads, indicating if sudo is running.
+    static ref SUDO_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+    // static ref SUDO_MUTEX: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+    static ref SUDO_MUTEX: Mutex<()> = Mutex::new(());
+}
 
 /// Conditionally spawns a new thread to maintain an active `sudo` session by periodically
 /// refreshing it.
@@ -23,15 +31,23 @@ static SUDO_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
 ///
 /// * Returns `Ok(())` if the function successfully starts a `sudo` refresh loop or if one is
 /// already running. Returns an `Err` if starting the `sudo` command fails at any point.
-pub(crate) fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
+pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
     if crate::USE_SUDO.load(Ordering::Relaxed) {
         debug!("Requesting ROOT privileges. Reason: {}", reason.as_ref());
-        if !SUDO_LOOP_RUNNING.load(Ordering::Relaxed) {
-            SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
-            let sudo_cmd = "sudo".to_string();
-            let flags = vec!["-v".to_string()];
-            update_sudo(&sudo_cmd, &flags)?;
-            thread::spawn(move || sudo_loop(&sudo_cmd, &flags));
+        let mut is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
+        if !is_running {
+            let _guard = SUDO_MUTEX.lock().await;
+            // Double-check the flag to handle race conditions
+            is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
+            if !is_running {
+                let sudo_cmd = "sudo".to_string();
+                let flags = vec!["-v".to_string()];
+                update_sudo(&sudo_cmd, &flags).await?;
+                tokio::spawn(async move {
+                    sudo_loop(&sudo_cmd, &flags).await
+                });
+                SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
+            }
         } else {
             debug!("sudo loop already running.")
         }
@@ -58,10 +74,10 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 ///
 /// *Returns `Ok(())` if the loop runs indefinitely without error. Returns an `Err` if executing the
 /// `sudo` command fails.
-fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
+async fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     loop {
-        thread::sleep(Duration::from_secs(250));
-        update_sudo(sudo, flags)?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(250)).await;
+        update_sudo(sudo, flags).await?;
     }
 }
 
@@ -79,8 +95,8 @@ fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
 ///
 /// * Returns `Ok(())` if the `sudo` command executes successfully. Returns an `Err` if the command
 /// fails to execute or completes with a non-success status.
-fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
-    stdout().flush()?;
+async fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
+    stdout().flush().await?;
     let status = Command::new(sudo)
         .args(flags)
         // This allows sudo to read the password from the terminal
@@ -105,7 +121,7 @@ pub(crate) async fn sudo_exec<S: AsRef<OsStr> + std::fmt::Debug>(
     } else {
         format!("Running {:?} with args: {:?}", cmd, args)
     };
-    spawn_sudo_maybe(reason).context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
 
     let mut cmd = tokio::process::Command::new("sudo")
         .arg(cmd)
@@ -131,7 +147,7 @@ pub(crate) async fn sudo_exec_output<S: AsRef<OsStr> + std::fmt::Debug>(
     } else {
         format!("Running {:?} with args: {:?}", cmd, args)
     };
-    spawn_sudo_maybe(reason).context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
 
     let output = tokio::process::Command::new("sudo")
         .arg(cmd)
@@ -155,7 +171,7 @@ pub(crate) async fn sudo_exec_success<S: AsRef<OsStr> + std::fmt::Debug>(
     } else {
         format!("Running {:?} with args: {:?}", cmd, args)
     };
-    spawn_sudo_maybe(reason).context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
 
     let status = tokio::process::Command::new("sudo")
         .arg(cmd)

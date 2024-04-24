@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use crate::read_module;
+use anyhow::{Context, Result};
 
+use crate::read_module;
 
 /// Dotdeploy module
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,8 +42,8 @@ pub(crate) fn add_module(
     dotdeploy_config: &crate::config::ConfigFile,
     modules: &mut std::collections::BTreeSet<Module>,
     manual: bool,
-    context: &mut std::collections::BTreeMap<String, String>
-) {
+    context: &mut std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     debug!("Processing module: {}", module_name);
     // Export module name
 
@@ -53,9 +54,7 @@ pub(crate) fn add_module(
             .hosts_root
             .join(module_name.trim_start_matches("hosts/"))
     } else {
-        dotdeploy_config
-            .modules_root
-            .join(module_name)
+        dotdeploy_config.modules_root.join(module_name)
     };
 
     // Export current module path
@@ -74,7 +73,7 @@ pub(crate) fn add_module(
             // If dependencies are specified, process each recursively.
             if let Some(dependencies) = &config.depends {
                 for dependency in dependencies {
-                    add_module(&dependency, dotdeploy_config, modules, false, context);
+                    add_module(&dependency, dotdeploy_config, modules, false, context)?;
                 }
             }
 
@@ -85,31 +84,34 @@ pub(crate) fn add_module(
                 config,
                 reason: match manual {
                     true => "manual".to_string(),
-                    false => "automatic".to_string()
-                }
+                    false => "automatic".to_string(),
+                },
             });
+            Ok(())
         }
-        // Log an error if the module's configuration cannot be read.
-        Err(e) => error!(
-            "Failed to read module configuration for {}:\n {}",
-            module_name, e
-        ),
-    };
+        // Error if the module's configuration cannot be read.
+        Err(e) => Err(e)
+            .with_context(|| format!("Failed to read module configuration for {}", module_name)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use std::fs;
     use tempfile::tempdir;
-    use serde::Serialize;
 
     #[derive(Serialize)]
     struct TempModuleConfig {
         depends: Option<Vec<String>>,
     }
 
-    fn create_temp_module_config(dir: &tempfile::TempDir, name: &str, depends: Option<Vec<&str>>) -> PathBuf {
+    fn create_temp_module_config(
+        dir: &tempfile::TempDir,
+        name: &str,
+        depends: Option<Vec<&str>>,
+    ) -> PathBuf {
         let config = TempModuleConfig {
             depends: depends.map(|deps| deps.into_iter().map(String::from).collect()),
         };
@@ -123,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_module_with_dependencies() {
+    fn test_add_module_with_dependencies() -> Result<()> {
         let temp_dir = tempdir().expect("Failed to create temp dir");
         let dotdeploy_config = crate::config::ConfigFile {
             config_root: temp_dir.path().to_path_buf(),
@@ -146,7 +148,13 @@ mod tests {
         create_temp_module_config(&temp_dir, "module3", None);
 
         // Add the root module, which should recursively add its dependencies
-        add_module("module1", &dotdeploy_config, &mut modules, true, &mut context);
+        add_module(
+            "module1",
+            &dotdeploy_config,
+            &mut modules,
+            true,
+            &mut context,
+        )?;
 
         // Check that all modules are present in the set
         assert!(modules.iter().any(|m| m.name == "module1"));
@@ -154,8 +162,15 @@ mod tests {
         assert!(modules.iter().any(|m| m.name == "module3"));
 
         // Test that adding modules does not cause duplicates
-        add_module("module1", &dotdeploy_config, &mut modules, true, &mut context);
+        add_module(
+            "module1",
+            &dotdeploy_config,
+            &mut modules,
+            true,
+            &mut context,
+        )?;
         // Verify length of the set
         assert_eq!(modules.len(), 3);
+        Ok(())
     }
 }

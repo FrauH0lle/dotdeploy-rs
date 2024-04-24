@@ -146,7 +146,7 @@ async fn run() -> Result<bool> {
                     &mut modules,
                     true,
                     &mut context,
-                );
+                )?;
 
                 trace!("Context values: {:#?}", &context);
 
@@ -154,12 +154,14 @@ async fn run() -> Result<bool> {
                 let stores = Arc::new((
                     crate::cache::init_user_store(None)
                         .await
-                        .map_err(|e| e.into_anyhow()).context("Failed to initialize user store")?,
+                        .map_err(|e| e.into_anyhow())
+                        .context("Failed to initialize user store")?,
                     if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
                         Some(
                             crate::cache::init_system_store()
                                 .await
-                                .map_err(|e| e.into_anyhow()).context("Failed to initialize system store")?,
+                                .map_err(|e| e.into_anyhow())
+                                .context("Failed to initialize system store")?,
                         )
                     } else {
                         None
@@ -287,7 +289,7 @@ async fn run() -> Result<bool> {
                         &mut module_configs,
                         true,
                         &mut context,
-                    );
+                    )?;
 
                     let user_files = stores
                         .0

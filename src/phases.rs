@@ -315,7 +315,6 @@ impl ManagedFile {
                 // - file not found in DB
 
                 let mut do_copy = false;
-                debug!("Trying to copy {:?} to {:?}", source, destination.path());
 
                 if template.expect("template should always be Some()") {
                     // Always copy the file if it is a template, no further checks
@@ -368,9 +367,10 @@ impl ManagedFile {
                             .await
                             .map_err(|e| e.into_anyhow())?;
                     }
+                    debug!("Trying to copy {:?} to {:?}", source, destination.path());
 
                     destination
-                        .copy(source, template.unwrap(), context)
+                        .copy(source, template.unwrap(), context, hb)
                         .await
                         .with_context(|| {
                             format!("Failed to copy {:?} to {:?}", source, destination.path())
@@ -415,6 +415,8 @@ impl ManagedFile {
                         source.display(),
                         destination.path().display()
                     );
+                } else {
+                    info!("'{}' deployed and up to date", destination.path().display());
                 }
             }
             FileOperation::Symlink {
@@ -431,10 +433,12 @@ impl ManagedFile {
                 };
 
                 // Perform symlink operation
-                debug!("Trying to link {:?} to {:?}", source, destination.path());
-
                 if common::check_file_exists(destination.path()).await?
                     && common::check_link_exists(destination.path(), Some(source)).await?
+                    && store
+                        .check_file_exists(destination.path())
+                        .await
+                        .map_err(|e| e.into_anyhow())?
                 {
                     info!("'{}' deployed and up to date", destination.path().display());
                 } else {
@@ -449,6 +453,9 @@ impl ManagedFile {
                             .await
                             .map_err(|e| e.into_anyhow())?;
                     }
+
+                    debug!("Trying to link {:?} to {:?}", source, destination.path());
+
                     destination
                         .link(source.to_path_buf())
                         .await
@@ -687,25 +694,26 @@ pub(crate) async fn assign_module_config(
 
         // Retrieve deployed files in order to check if their status is still valid. Thus, if a source
         // does not exist or it is not part of the config anymore, remove the destination.
-        let mut user_files: HashMap<String, Option<String>> = stores
+        let mut user_files: HashMap<String, (Option<String>, String)> = stores
             .0
             .get_all_files(&module_name)
             .await
             .map_err(|e| e.into_anyhow())?
             .into_iter()
-            .map(|f| (f.destination, f.source))
+            .map(|f| (f.destination, (f.source, f.operation)))
             .collect();
-        let mut sys_files: HashMap<String, Option<String>> = if let Some(ref sys_store) = stores.1 {
-            sys_store
-                .get_all_files(&module_name)
-                .await
-                .map_err(|e| e.into_anyhow())?
-                .into_iter()
-                .map(|f| (f.destination, f.source))
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let mut sys_files: HashMap<String, (Option<String>, String)> =
+            if let Some(ref sys_store) = stores.1 {
+                sys_store
+                    .get_all_files(&module_name)
+                    .await
+                    .map_err(|e| e.into_anyhow())?
+                    .into_iter()
+                    .map(|f| (f.destination, (f.source, f.operation)))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
         // Assign files to phases based on their specified deployment phase.
         if let Some(files) = module.config.files {
@@ -729,7 +737,7 @@ pub(crate) async fn assign_module_config(
         // Remove files with missing source files and files which are dynamically created.
         for (k, _) in user_files {
             info!(
-                "{}: '{}' is not part of the config or source file not found anymore. Removing.",
+                "{}: '{}' is not part of the config anymore, its action has changed or source file has been removed. Removing.",
                 module_name, k
             );
             stores
@@ -737,7 +745,10 @@ pub(crate) async fn assign_module_config(
                 .remove_file(&k)
                 .await
                 .map_err(|e| e.into_anyhow())?;
-            tokio::fs::remove_file(&k).await?;
+
+            crate::common::delete_file(&k)
+                .await
+                .with_context(|| format!("Failed to remove file {:?}", &k))?;
 
             // Restore backup
             if stores
@@ -758,14 +769,16 @@ pub(crate) async fn assign_module_config(
                     .remove_backup(&k)
                     .await
                     .map_err(|e| e.into_anyhow())?;
+
+                info!("Restored {:?} from backup", &k);
             }
         }
-        for (k, v) in sys_files {
+        for (k, _) in sys_files {
             info!(
-                "{}: '{}' is not part of the config or source file not found anymore. Removing.",
+                "{}: '{}' is not part of the config anymore, its action has changed or source file has been removed. Removing.",
                 module_name, k
             );
-            crate::sudo::spawn_sudo_maybe(format!("Remove file {:?}", v).as_str())?;
+
             stores
                 .1
                 .as_ref()
@@ -773,13 +786,11 @@ pub(crate) async fn assign_module_config(
                 .remove_file(&k)
                 .await
                 .map_err(|e| e.into_anyhow())?;
-            tokio::process::Command::new("sudo")
-                .arg("rm")
-                .arg("-f")
-                .arg(&k)
-                .status()
+
+            crate::common::delete_file(&k)
                 .await
-                .with_context(|| format!("Failed to remove file {:?}", v))?;
+                .with_context(|| format!("Failed to remove file {:?}", &k))?;
+
             // Restore backup
             if stores
                 .1
@@ -805,6 +816,8 @@ pub(crate) async fn assign_module_config(
                     .remove_backup(&k)
                     .await
                     .map_err(|e| e.into_anyhow())?;
+
+                info!("Restored {:?} from backup", &k);
             }
         }
     }
@@ -831,8 +844,8 @@ fn assign_files_to_phases(
     module_name: String,
     files: BTreeMap<PathBuf, crate::read_module::FileConfig>,
     phases: &mut BTreeMap<String, Phase>,
-    user_files: &mut HashMap<String, Option<String>>,
-    sys_files: &mut HashMap<String, Option<String>>,
+    user_files: &mut HashMap<String, (Option<String>, String)>,
+    sys_files: &mut HashMap<String, (Option<String>, String)>,
 ) -> Result<()> {
     for (dest, conf) in files.into_iter() {
         // Check if source is defined for copy and link as well as if the file exists. If one
@@ -858,10 +871,22 @@ fn assign_files_to_phases(
                 .context("Failed to expand $HOME")?
                 .to_string(),
         ) {
-            Destination::Home(PathBuf::from(&dest))
+            Destination::Home(PathBuf::from(
+                &dest
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
+                    // Replace ##dot## with '.' in destinations
+                    .replace("##dot##", "."),
+            ))
         } else {
             if crate::DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
-                Destination::Root(PathBuf::from(&dest))
+                Destination::Root(PathBuf::from(
+                    &dest
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
+                        // Replace ##dot## with '.' in destinations
+                        .replace("##dot##", "."),
+                ))
             } else {
                 bail!(
                     "Deploying system files is disabled.
@@ -881,18 +906,22 @@ Check the value of the variable `deploy_sys_files` in `$HOME/.config/dotdeploy/c
                     anyhow!("'source' is required for 'link' or 'copy' operations")
                 })?;
 
-                // Remove files with changed source
+                // Remove files with changed source, which means here: keep them in the hashmap.
                 if let Some(s) = user_files.get(&destination.path().display().to_string()) {
-                    if let Some(db_source) = s {
-                        if db_source == &source.display().to_string() {
-                            user_files.remove(&destination.path().display().to_string());
+                    if Some(s.1.as_str()) == conf.action.as_deref() {
+                        if let Some(db_source) = &s.0 {
+                            if db_source == &source.display().to_string() {
+                                user_files.remove(&destination.path().display().to_string());
+                            }
                         }
                     }
                 }
                 if let Some(s) = sys_files.get(&destination.path().display().to_string()) {
-                    if let Some(db_source) = s {
-                        if db_source == &source.display().to_string() {
-                            sys_files.remove(&destination.path().display().to_string());
+                    if Some(s.1.as_str()) == conf.action.as_deref() {
+                        if let Some(db_source) = &s.0 {
+                            if db_source == &source.display().to_string() {
+                                sys_files.remove(&destination.path().display().to_string());
+                            }
                         }
                     }
                 }

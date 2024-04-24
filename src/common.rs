@@ -116,6 +116,10 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             Ok(sudo::sudo_exec("rm", &vec!["-f", &path_to_string(&path)?], None).await?)
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!("{}", e);
+            Ok(())
+        }
         Err(e) => Err(e).with_context(|| format!("Falied to delete {:?}", &path.as_ref()))?,
     }
 }

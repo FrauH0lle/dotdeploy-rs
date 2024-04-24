@@ -67,13 +67,8 @@ pub(crate) async fn remove(
     mut phases: BTreeMap<String, crate::phases::Phase>,
     stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
     files: Vec<crate::cache::StoreFile>,
-    context: serde_json::Value,
     dotdeploy_config: &crate::config::ConfigFile,
 ) -> Result<()> {
-    // Init store
-    // let stores = Arc::new(stores);
-    let context = Arc::new(context);
-
     let phase_name = "remove";
     info!("Starting {} phase", phase_name.to_uppercase());
     // We can consume the phases BTreeMap, thus remove the key from it and take ownership.
@@ -89,7 +84,7 @@ pub(crate) async fn remove(
             if !v.is_empty() {
                 info!("Executing pre stage actions");
                 for a in v.into_iter() {
-                    a.run()?
+                    a.run().await?
                 }
             }
         }
@@ -133,7 +128,6 @@ pub(crate) async fn remove(
         // Remove the file async
         for file in files.clone() {
             let stores_clone = Arc::clone(&stores); // Clone the Arc
-            let context_clone = Arc::clone(&context);
             set.spawn(async move {
                 match remove_file(&file.destination, stores_clone).await {
                     Ok(()) => Ok(()),
@@ -156,7 +150,7 @@ pub(crate) async fn remove(
             if !v.is_empty() {
                 info!("Executing main stage actions");
                 for a in v.into_iter() {
-                    a.run()?
+                    a.run().await?
                 }
             }
         }
@@ -165,7 +159,7 @@ pub(crate) async fn remove(
             if !v.is_empty() {
                 info!("Executing post stage actions");
                 for a in v.into_iter() {
-                    a.run()?
+                    a.run().await?
                 }
             }
         }

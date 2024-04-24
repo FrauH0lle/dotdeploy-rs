@@ -27,7 +27,7 @@ pub(crate) async fn deploy(
                 if !v.is_empty() {
                     info!("Executing pre stage actions");
                     for a in v.into_iter() {
-                        a.run()?
+                        a.run().await?
                     }
                 }
             }
@@ -84,7 +84,7 @@ pub(crate) async fn deploy(
                 if !v.is_empty() {
                     info!("Executing main stage actions");
                     for a in v.into_iter() {
-                        a.run()?
+                        a.run().await?
                     }
                 }
             }
@@ -93,7 +93,7 @@ pub(crate) async fn deploy(
                 if !v.is_empty() {
                     info!("Executing post stage actions");
                     for a in v.into_iter() {
-                        a.run()?
+                        a.run().await?
                     }
                 }
             }

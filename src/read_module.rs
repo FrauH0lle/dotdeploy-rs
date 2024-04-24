@@ -248,15 +248,19 @@ where
     let source: Option<String> = Option::deserialize(deserializer)?;
     source
         .map(|s| {
-            shellexpand::full(&format!(
-                "{}{}{}",
-                std::env::var("DOD_CURRENT_MODULE").expect(
-                    "env variable `DOD_CURRENT_MODULE` should be set by `modules::add_module`"
-                ),
-                std::path::MAIN_SEPARATOR_STR,
-                &s
-            ))
-            .map(|expanded| PathBuf::from(expanded.as_ref()))
+            if shellexpand::full(&s)?.starts_with("/") {
+                shellexpand::full(&s).map(|expanded| PathBuf::from(expanded.as_ref()))
+            } else {
+                shellexpand::full(&format!(
+                    "{}{}{}",
+                    std::env::var("DOD_CURRENT_MODULE").expect(
+                        "env variable `DOD_CURRENT_MODULE` should be set by `modules::add_module`"
+                    ),
+                    std::path::MAIN_SEPARATOR_STR,
+                    &s
+                ))
+                .map(|expanded| PathBuf::from(expanded.as_ref()))
+            }
         })
         .transpose()
         .map_err(serde::de::Error::custom)
@@ -276,13 +280,7 @@ where
             map.into_iter()
                 .map(|(key, value)| {
                     shellexpand::full(&key)
-                        // Replace ##dot## with '.' in destinations
-                        .map(|expanded| {
-                            (
-                                PathBuf::from(expanded.as_ref().replace("##dot##", ".")),
-                                value,
-                            )
-                        })
+                        .map(|expanded| (PathBuf::from(expanded.as_ref()), value))
                         .map_err(serde::de::Error::custom)
                 })
                 .collect()
@@ -549,12 +547,20 @@ impl ModuleConfig {
                             .source
                             .as_ref()
                             .and_then(|s| s.parent())
-                            .ok_or_else(|| anyhow!("Source has no parent directory"))?;
-                        let dest_parent = dest
-                            .parent()
-                            .ok_or_else(|| anyhow!("Destination has no parent directory"))?;
+                            .ok_or_else(|| {
+                                anyhow!("Source {:?} has no parent directory", conf.source.as_ref())
+                            })?;
+                        let dest_parent = dest.parent().ok_or_else(|| {
+                            anyhow!("Destination {:?} has no parent directory", dest)
+                        })?;
                         let new_sources =
-                            read_directory(conf.source.as_ref().unwrap().parent().unwrap())?;
+                            read_directory(conf.source.as_ref().unwrap().parent().unwrap())
+                                .with_context(|| {
+                                    format!(
+                                        "Failed to read directory {:?}",
+                                        conf.source.as_ref().unwrap().parent().unwrap()
+                                    )
+                                })?;
                         for s in new_sources.into_iter() {
                             let relative_path = s.strip_prefix(source_parent)?.to_owned();
                             let new_dest = dest_parent.join(relative_path);
@@ -608,7 +614,7 @@ fn read_directory(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 impl ActionConfig {
-    pub fn run(&self) -> Result<()> {
+    pub(crate) async fn run(&self) -> Result<()> {
         match &self.exec {
             RunExec::Code(code) => {
                 let mut cmd = std::process::Command::new("sh")
@@ -632,6 +638,7 @@ impl ActionConfig {
                         "Running {:?} with args: {:?}",
                         file, args
                     ))
+                    .await
                     .context("Failed to spawn sudo")?;
 
                     let mut fcmd = vec![file];

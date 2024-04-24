@@ -133,14 +133,7 @@ pub(crate) fn close_connection<P: AsRef<Path>>(path: P) -> Result<()> {
             .parent()
             .map_or_else(|| false, |p| p.join("store.sqlite-wal").exists())
         {
-            let conn =
-                deadpool_sqlite::rusqlite::Connection::open(&path)?;
-            conn.pragma_update(
-                Some(deadpool_sqlite::rusqlite::DatabaseName::Main),
-                "auto_vacuum",
-                1,
-            )
-            .context("Failed to run PRAGMA auto_vacuum=1")?;
+            let conn = deadpool_sqlite::rusqlite::Connection::open(&path)?;
             conn.pragma_update(
                 Some(deadpool_sqlite::rusqlite::DatabaseName::Main),
                 "journal_mode",
@@ -154,8 +147,8 @@ pub(crate) fn close_connection<P: AsRef<Path>>(path: P) -> Result<()> {
             )
             .context("Failed to run PRAGMA synchronous=NORMAL")?;
 
-            conn.execute_batch("PRAGMA incremental_vacuum;")
-                .context("Failed to run PRAGMA incremental_vacuum")?;
+            conn.execute_batch("VACUUM;;")
+                .context("Failed to run VACUUM;")?;
 
             drop(conn);
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -167,13 +160,6 @@ pub(crate) fn close_connection<P: AsRef<Path>>(path: P) -> Result<()> {
 fn prepare_connection(
     connection: &mut deadpool_sqlite::rusqlite::Connection,
 ) -> Result<(), SQLiteError> {
-    connection
-        .pragma_update(
-            Some(deadpool_sqlite::rusqlite::DatabaseName::Main),
-            "auto_vacuum",
-            1,
-        )
-        .context("Failed to run PRAGMA auto_vacuum=1")?;
     connection
         .pragma_update(
             Some(deadpool_sqlite::rusqlite::DatabaseName::Main),
@@ -358,7 +344,7 @@ impl Store {
                link_source TEXT,
                owner TEXT NOT NULL,
                permissions INTEGER,
-               checksum TEXT NOT NULL,
+               checksum TEXT,
                date TEXT NOT NULL
              );",
                 [],
@@ -643,6 +629,41 @@ impl Store {
             }
             Ok(files)
         }).await?
+    }
+
+    /// Check if a file exists in the store database.
+    pub(crate) async fn check_file_exists<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<bool, SQLiteError> {
+        let path_str = common::path_to_string(path)?;
+        let store_path = self.path.clone();
+
+        debug!("Looking for {} in {}", &path_str, &self.path.display());
+
+        let conn = &self.get_con().await?;
+
+        let result = conn
+            .interact(move |conn| -> Result<bool, SQLiteError> {
+                prepare_connection(conn)?;
+                let mut stmt =
+                    conn.prepare("SELECT destination FROM files where destination = $1")?;
+
+                match stmt.query_row(params![path_str], |row| row.get::<_, String>(0)) {
+                    Ok(_) => {
+                        debug!("Found {} in {}", &path_str, &store_path.display());
+                        Ok(true)
+                    }
+                    Err(e) if e == deadpool_sqlite::rusqlite::Error::QueryReturnedNoRows => {
+                        debug!("Could not find {} in {}", &path_str, &store_path.display());
+                        Ok(false)
+                    }
+                    Err(e) => Err(SQLiteError::QueryError(e)),
+                }
+            })
+            .await??;
+
+        Ok(result)
     }
 
     // Checksums
@@ -1030,6 +1051,39 @@ impl Store {
         match result.file_type.as_str() {
             "link" => match tokio::fs::symlink(result.link_source.as_ref().unwrap(), &to).await {
                 Ok(_) => {
+                    common::set_file_metadata(
+                        file_path,
+                        common::FileMetadata {
+                            uid: Some(
+                                owner[0]
+                                    .parse::<u32>()
+                                    .map_err(|e| SQLiteError::Other(e.into()))?,
+                            ),
+                            gid: Some(
+                                owner[1]
+                                    .parse::<u32>()
+                                    .map_err(|e| SQLiteError::Other(e.into()))?,
+                            ),
+                            permissions: None,
+                            is_symlink: true,
+                            symlink_source: None,
+                            checksum: None,
+                        },
+                    )
+                    .await?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    sudo::sudo_exec(
+                        "ln",
+                        &vec![
+                            "-sf",
+                            result.link_source.as_ref().unwrap(),
+                            to.as_ref().to_str().unwrap(),
+                        ],
+                        None,
+                    )
+                    .await?;
+
                     common::set_file_metadata(
                         file_path,
                         common::FileMetadata {
