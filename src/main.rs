@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lazy_static::lazy_static;
+
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,10 +22,12 @@ mod read_module;
 mod remove;
 mod sudo;
 
-/// Global variable, available to all threads, indicating if the system store can be used.
-pub(crate) static DEPLOY_SYSTEM_FILES: AtomicBool = AtomicBool::new(false);
-/// Global variable, available to all threads, indicating if sudo can be used.
-pub(crate) static USE_SUDO: AtomicBool = AtomicBool::new(false);
+lazy_static! {
+    /// Global variable, available to all threads, indicating if the system store can be used.
+    pub(crate) static ref DEPLOY_SYSTEM_FILES: AtomicBool = AtomicBool::new(false);
+    /// Global variable, available to all threads, indicating if sudo can be used.
+    pub(crate) static ref USE_SUDO: AtomicBool = AtomicBool::new(false);
+}
 
 #[tokio::main]
 async fn main() {
