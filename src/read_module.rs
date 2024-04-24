@@ -334,14 +334,16 @@ impl Conditional for Generate {
 }
 
 /// Evaluate the handlebars template in the `eval_when` field.
-fn eval_condition(condition: &str, context: &serde_json::Value) -> Result<bool> {
-    let mut handlebars = handlebars::Handlebars::new();
-    handlebars.set_strict_mode(true);
+fn eval_condition(
+    condition: &str,
+    context: &serde_json::Value,
+    hb: &handlebars::Handlebars<'static>,
+) -> Result<bool> {
     let eval_template = format!(
         "{{{{#if {condition}}}}}true{{{{else}}}}false{{{{/if}}}}",
         condition = condition
     );
-    let result = handlebars
+    let result = hb
         .render_template(&eval_template, &context)
         .with_context(|| format!("Failed to evaluate template: {}", eval_template))?;
 
@@ -354,12 +356,16 @@ fn eval_condition(condition: &str, context: &serde_json::Value) -> Result<bool> 
 
 impl ModuleConfig {
     /// Evaluate conditionals for files, hooks and packages.
-    pub(crate) fn eval_conditionals(&mut self, context: &serde_json::Value) -> Result<()> {
+    pub(crate) fn eval_conditionals(
+        &mut self,
+        context: &serde_json::Value,
+        hb: &handlebars::Handlebars<'static>,
+    ) -> Result<()> {
         match &mut self.files {
             Some(files) => {
                 files.retain(|_key, value| {
                     if let Some(cond) = value.eval_when() {
-                        match eval_condition(cond, context) {
+                        match eval_condition(cond, context, hb) {
                             // Condition passes, so do not remove
                             Ok(true) => true,
                             // Condition fails, remove
@@ -386,7 +392,7 @@ impl ModuleConfig {
             Some(generate) => {
                 generate.retain(|_key, value| {
                     if let Some(cond) = value.eval_when() {
-                        match eval_condition(cond, context) {
+                        match eval_condition(cond, context, hb) {
                             // Condition passes, so do not remove
                             Ok(true) => true,
                             // Condition fails, remove
@@ -418,7 +424,7 @@ impl ModuleConfig {
                         // Process each action
                         stage_actions.retain(|action| {
                             if let Some(cond) = &action.eval_when {
-                                match eval_condition(cond, context) {
+                                match eval_condition(cond, context, hb) {
                                     // Condition passes, so do not remove
                                     Ok(true) => true,
                                     // Condition fails, remove
@@ -450,7 +456,7 @@ impl ModuleConfig {
             Some(packages) => {
                 packages.retain(|pkgs| {
                     if let Some(cond) = &pkgs.eval_when {
-                        match eval_condition(cond, context) {
+                        match eval_condition(cond, context, hb) {
                             // Condition passes, so do not remove
                             Ok(true) => true,
                             // Condition fails, remove
@@ -477,7 +483,7 @@ impl ModuleConfig {
             Some(messages) => {
                 messages.retain(|msgs| {
                     if let Some(cond) = &msgs.eval_when {
-                        match eval_condition(cond, context) {
+                        match eval_condition(cond, context, hb) {
                             // Condition passes, so do not remove
                             Ok(true) => true,
                             // Condition fails, remove
@@ -767,7 +773,9 @@ mod tests {
         };
 
         let context = test_context();
-        config.eval_conditionals(&context)?;
+        let mut handlebars: handlebars::Handlebars<'static> = handlebars::Handlebars::new();
+        handlebars.set_strict_mode(true);
+        config.eval_conditionals(&context, &handlebars)?;
 
         assert!(config.packages.is_none());
         assert!(config.files.is_none());

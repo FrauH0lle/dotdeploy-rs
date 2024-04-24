@@ -90,6 +90,7 @@ impl Destination {
         source: P,
         template: bool,
         context: &serde_json::Value,
+        hb: &handlebars::Handlebars<'static>,
     ) -> Result<()> {
         match self {
             Destination::Home(dest) => {
@@ -98,15 +99,18 @@ impl Destination {
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
                 tokio::fs::create_dir_all(parent).await?;
 
+                // Remove file if already present
+                if common::check_file_exists(dest).await? {
+                    common::delete_file(dest).await?
+                }
+
                 if template {
                     let file_content = tokio::fs::read_to_string(&source).await?;
-                    let mut handlebars = handlebars::Handlebars::new();
-                    handlebars.set_strict_mode(true);
-                    let rendered = handlebars
-                        .render_template(&file_content, &context)
-                        .with_context(|| {
-                            format!("Failed to render template {:?}", &source.as_ref())
-                        })?;
+                    let rendered =
+                        hb.render_template(&file_content, &context)
+                            .with_context(|| {
+                                format!("Failed to render template {:?}", &source.as_ref())
+                            })?;
                     tokio::fs::write(dest, rendered).await?;
                 } else {
                     tokio::fs::copy(&source, dest).await.with_context(|| {
@@ -122,16 +126,19 @@ impl Destination {
                 sudo::sudo_exec("mkdir", &vec!["-p", &common::path_to_string(parent)?], None)
                     .await?;
 
+                // Remove file if already present
+                if common::check_file_exists(dest).await? {
+                    common::delete_file(dest).await?
+                }
+
                 if template {
                     let temp_file = tempfile::NamedTempFile::new()?;
                     let file_content = tokio::fs::read_to_string(&source).await?;
-                    let mut handlebars = handlebars::Handlebars::new();
-                    handlebars.set_strict_mode(true);
-                    let rendered = handlebars
-                        .render_template(&file_content, &context)
-                        .with_context(|| {
-                            format!("Failed to render template {:?}", &source.as_ref())
-                        })?;
+                    let rendered =
+                        hb.render_template(&file_content, &context)
+                            .with_context(|| {
+                                format!("Failed to render template {:?}", &source.as_ref())
+                            })?;
                     tokio::fs::write(&temp_file, rendered).await?;
 
                     sudo::sudo_exec(
@@ -167,6 +174,9 @@ impl Destination {
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
                 tokio::fs::create_dir_all(parent).await?;
+                if common::check_file_exists(dest).await? {
+                    common::delete_file(dest).await?
+                }
                 tokio::fs::symlink(&source, dest).await.with_context(|| {
                     format!("Failed to copy {:?} to {:?}", source.as_ref(), dest)
                 })?;
@@ -200,6 +210,7 @@ impl Destination {
         content: S,
         template: bool,
         context: &serde_json::Value,
+        hb: &handlebars::Handlebars<'static>,
     ) -> Result<()> {
         match self {
             Destination::Home(dest) => {
@@ -208,12 +219,9 @@ impl Destination {
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
                 tokio::fs::create_dir_all(parent).await?;
                 if template {
-                    let mut handlebars = handlebars::Handlebars::new();
-                    handlebars.set_strict_mode(true);
                     tokio::fs::write(
                         dest,
-                        handlebars
-                            .render_template(content.as_ref(), &context)
+                        hb.render_template(content.as_ref(), &context)
                             .with_context(|| {
                                 format!("Failed to render template for {:?}", &dest)
                             })?,
@@ -237,12 +245,9 @@ impl Destination {
                 let temp_file = tempfile::NamedTempFile::new()?;
 
                 if template {
-                    let mut handlebars = handlebars::Handlebars::new();
-                    handlebars.set_strict_mode(true);
                     tokio::fs::write(
                         &temp_file,
-                        handlebars
-                            .render_template(content.as_ref(), &context)
+                        hb.render_template(content.as_ref(), &context)
                             .with_context(|| {
                                 format!("Failed to render template for {:?}", &temp_file)
                             })?,
@@ -285,6 +290,7 @@ impl ManagedFile {
         &self,
         stores: &(crate::cache::Store, Option<crate::cache::Store>),
         context: &serde_json::Value,
+        hb: &handlebars::Handlebars<'static>,
     ) -> Result<()> {
         match &self.operation {
             FileOperation::Copy {
@@ -518,7 +524,7 @@ impl ManagedFile {
                 }
 
                 destination
-                    .create(content, template.unwrap(), context)
+                    .create(content, template.unwrap(), context, hb)
                     .await?;
 
                 common::set_file_metadata(
@@ -594,6 +600,7 @@ pub(crate) async fn assign_module_config(
         std::collections::BTreeMap<String, Vec<String>>,
     ),
     generators: &mut std::collections::BTreeMap<std::path::PathBuf, crate::read_module::Generate>,
+    hb: &handlebars::Handlebars<'static>,
 ) -> Result<BTreeMap<String, Phase>> {
     let mut phases: BTreeMap<String, Phase> = BTreeMap::new();
     let stage_names = ["pre", "main", "post"];
@@ -623,12 +630,15 @@ pub(crate) async fn assign_module_config(
     // BTreeSet does not have drain so we do it manually. Should be fast enough.
     for mut module in modules.into_iter() {
         // Evaluate module configurations against the provided context
-        module.config.eval_conditionals(&context).with_context(|| {
-            format!(
-                "Failed to evaluate conditionals for module '{}'",
-                module.name
-            )
-        })?;
+        module
+            .config
+            .eval_conditionals(&context, hb)
+            .with_context(|| {
+                format!(
+                    "Failed to evaluate conditionals for module '{}'",
+                    module.name
+                )
+            })?;
 
         let module_name = module.name;
 
@@ -641,11 +651,8 @@ pub(crate) async fn assign_module_config(
                             messages.0.insert(module_name.clone(), vec![]);
                         }
                         let value = messages.0.get_mut(&module_name).unwrap();
-                        let mut handlebars = handlebars::Handlebars::new();
-                        handlebars.set_strict_mode(true);
-                        let rendered = handlebars
-                            .render_template(&m.message, &context)
-                            .with_context(|| {
+                        let rendered =
+                            hb.render_template(&m.message, &context).with_context(|| {
                                 format!("Failed to render template {:?}", &m.message)
                             })?;
 
@@ -658,11 +665,8 @@ pub(crate) async fn assign_module_config(
                         }
                         let value = messages.1.get_mut(&module_name).unwrap();
                         value.push(m.message.clone());
-                        let mut handlebars = handlebars::Handlebars::new();
-                        handlebars.set_strict_mode(true);
-                        let rendered = handlebars
-                            .render_template(&m.message, &context)
-                            .with_context(|| {
+                        let rendered =
+                            hb.render_template(&m.message, &context).with_context(|| {
                                 format!("Failed to render template {:?}", &m.message)
                             })?;
 

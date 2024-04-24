@@ -12,6 +12,7 @@ async fn generate_file<P: AsRef<Path>>(
     target: P,
     generator: &read_module::Generate,
     context: &serde_json::Value,
+    hb: &handlebars::Handlebars<'static>,
 ) -> Result<()> {
     let modules = stores
         .0
@@ -20,9 +21,7 @@ async fn generate_file<P: AsRef<Path>>(
         .map_err(|e| e.into_anyhow())?;
     let mut content = String::new();
     if let Some(prepend) = &generator.prepend {
-        let mut handlebars = handlebars::Handlebars::new();
-        handlebars.set_strict_mode(true);
-        let rendered = handlebars
+        let rendered = hb
             .render_template(&prepend, &context)
             .with_context(|| format!("Failed to render template {:?}", &prepend))?;
 
@@ -33,20 +32,16 @@ async fn generate_file<P: AsRef<Path>>(
         let location: PathBuf = [&module.location, &generator.source].iter().collect();
         if location.exists() {
             let found_content = fs::read_to_string(&location).await?;
-            let mut handlebars = handlebars::Handlebars::new();
-            handlebars.set_strict_mode(true);
-            let rendered = handlebars
+            let rendered = hb
                 .render_template(&found_content, &context)
-                .with_context(|| format!("Failed to render template {:?}", &&found_content))?;
+                .with_context(|| format!("Failed to render template {:?}", &found_content))?;
 
             content.push_str(&rendered);
         }
     }
 
     if let Some(append) = &generator.append {
-        let mut handlebars = handlebars::Handlebars::new();
-        handlebars.set_strict_mode(true);
-        let rendered = handlebars
+        let rendered = hb
             .render_template(&append, &context)
             .with_context(|| format!("Failed to render template {:?}", &append))?;
 
@@ -91,6 +86,7 @@ pub(crate) async fn generate_files(
     stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
     generators: std::collections::BTreeMap<std::path::PathBuf, read_module::Generate>,
     context: serde_json::Value,
+    hb: Arc<handlebars::Handlebars<'static>>,
 ) -> Result<()> {
     let mut set = tokio::task::JoinSet::new();
     let context = Arc::new(context);
@@ -115,9 +111,10 @@ pub(crate) async fn generate_files(
     for (target, config) in generators.into_iter() {
         let stores_clone = Arc::clone(&stores); // Clone the Arc
         let context_clone = Arc::clone(&context);
+        let hb_clone = Arc::clone(&hb);
 
         set.spawn(
-            async move { generate_file(stores_clone, target, &config, &context_clone).await },
+            async move { generate_file(stores_clone, target, &config, &context_clone, &hb_clone).await },
         );
     }
 

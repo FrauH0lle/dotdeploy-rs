@@ -97,6 +97,9 @@ async fn run() -> Result<bool> {
 
     // Handlebars templating
     let mut context: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut handlebars: handlebars::Handlebars<'static> = handlebars::Handlebars::new();
+    handlebars.set_strict_mode(true);
+    let handlebars = Arc::new(handlebars);
 
     context.insert(
         "DOD_ROOT".to_string(),
@@ -188,13 +191,13 @@ async fn run() -> Result<bool> {
                     }
                 }
 
-                // info!("Modules are {:#?}", modules);
                 let phases = phases::assign_module_config(
                     modules,
                     serde_json::to_value(&context)?,
                     &stores,
                     &mut messages,
                     &mut generators,
+                    &handlebars,
                 )
                 .await?;
 
@@ -202,6 +205,7 @@ async fn run() -> Result<bool> {
                     phases,
                     Arc::clone(&stores),
                     serde_json::to_value(&context)?,
+                    Arc::clone(&handlebars),
                     &dotdeploy_config,
                 )
                 .await?;
@@ -211,6 +215,7 @@ async fn run() -> Result<bool> {
                     Arc::clone(&stores),
                     generators,
                     serde_json::to_value(context)?,
+                    handlebars,
                 )
                 .await?;
 
@@ -322,17 +327,12 @@ async fn run() -> Result<bool> {
                     &stores,
                     &mut messages,
                     &mut generators,
+                    &handlebars,
                 )
                 .await?;
 
-                crate::remove::remove(
-                    phases,
-                    Arc::clone(&stores),
-                    files,
-                    serde_json::to_value(&context)?,
-                    &dotdeploy_config,
-                )
-                .await?;
+                crate::remove::remove(phases, Arc::clone(&stores), files, &dotdeploy_config)
+                    .await?;
 
                 // Remove modules from the stores
                 for module in modules.iter() {
@@ -354,6 +354,7 @@ async fn run() -> Result<bool> {
                     Arc::clone(&stores),
                     generators,
                     serde_json::to_value(context)?,
+                    handlebars,
                 )
                 .await?;
 

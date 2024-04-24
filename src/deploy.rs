@@ -6,10 +6,10 @@ pub(crate) async fn deploy(
     mut phases: BTreeMap<String, crate::phases::Phase>,
     stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
     context: serde_json::Value,
+    hb: Arc<handlebars::Handlebars<'static>>,
     dotdeploy_config: &crate::config::ConfigFile,
 ) -> Result<()> {
-    // Init store
-    // let stores = Arc::new(stores);
+    let hb = Arc::new(hb);
     let context = Arc::new(context);
 
     for phase_name in ["setup", "deploy", "config"].iter() {
@@ -37,8 +37,9 @@ pub(crate) async fn deploy(
 
                 for file in files {
                     let stores_clone = Arc::clone(&stores); // Clone the Arc
+                    let hb_clone = Arc::clone(&hb);
                     let context_clone = Arc::clone(&context);
-                    set.spawn(async move { file.perform(&stores_clone, &context_clone).await });
+                    set.spawn(async move { file.perform(&stores_clone, &context_clone, &hb_clone).await });
                 }
 
                 while let Some(res) = set.join_next().await {
