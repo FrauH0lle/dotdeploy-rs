@@ -143,7 +143,7 @@ pub(crate) async fn remove(
         // But remove the parent directories sync!
         for file in files {
             // Remove directory and parents if empty
-            common::delete_parents(&file.destination).await?;
+            common::delete_parents(&file.destination, false).await?;
         }
 
         if let Some(v) = main_actions {

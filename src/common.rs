@@ -124,7 +124,7 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 }
 
-pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P) -> Result<()> {
+pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Result<()> {
     let mut path = path
         .as_ref()
         .parent()
@@ -132,25 +132,41 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P) -> Result<()> {
 
     while path.is_dir()
         && match path.read_dir() {
-            Ok(_) => path.read_dir().map(|mut i| i.next().is_none()).unwrap_or(false),
+            Ok(_) => path
+                .read_dir()
+                .map(|mut i| i.next().is_none())
+                .unwrap_or(false),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                sudo::sudo_exec_success(
-                    "test",
-                    &[
-                        "-n",
-                        &format!("\"$(find {} -maxdepth 0 -empty)\"", path.display()),
-                    ],
+                let path_str = path_to_string(path)?;
+                let output = sudo::sudo_exec_output(
+                    "find",
+                    &[path_str.as_str(), "-maxdepth", "0", "-empty"],
                     None,
                 )
-                .await?
+                .await?;
+                if output.status.success() {
+                    if output.stdout.is_empty() {
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    bail!(
+                        "Failed to check if directory {} is empty: {}",
+                        path_str,
+                        String::from_utf8(output.stderr)?
+                    )
+                }
             }
             Err(e) => Err(e).with_context(|| format!("Failed to read directory {:?}", path))?,
         }
     {
-        if ask_boolean(&format!(
-            "Directory at {:?} is now empty. Delete [y/N]? ",
-            path
-        )) {
+        if no_ask
+            || ask_boolean(&format!(
+                "Directory at {:?} is now empty. Delete [y/N]? ",
+                path
+            ))
+        {
             match fs::remove_dir(path).await {
                 Ok(_) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
