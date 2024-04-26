@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Result};
 
 pub(crate) fn default_cmds() -> Result<(
     HashMap<String, VecDeque<String>>,

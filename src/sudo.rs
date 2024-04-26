@@ -39,7 +39,7 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
             if !is_running {
                 let sudo_cmd = "sudo";
                 let flags = vec!["-v"];
-                std::thread::spawn(move || sudo_loop(&sudo_cmd, &flags));
+                std::thread::spawn(move || sudo_loop(sudo_cmd, &flags));
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
             }
         } else {

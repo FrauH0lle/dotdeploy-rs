@@ -212,7 +212,7 @@ impl<'de> Deserialize<'de> for ActionConfig {
                 // Decide how to interpret the `exec` field based on `exec_file`. If `exec_file` is
                 // true, treat `exec` as a filepath (File variant of Exec). Otherwise, treat `exec`
                 // as a command to execute directly (Code variant of Exec).
-                let exec = if helper.exec_file.is_some_and(|x| x == true) {
+                let exec = if helper.exec_file.is_some_and(|x| x) {
                     match shellexpand::full(&helper.exec) {
                         Ok(p) => RunExec::File(p.to_string()),
                         Err(e) => {
@@ -228,7 +228,7 @@ impl<'de> Deserialize<'de> for ActionConfig {
                 Ok(ActionConfig {
                     exec,
                     eval_when: helper.eval_when,
-                    sudo: helper.sudo.unwrap_or_else(|| false),
+                    sudo: helper.sudo.unwrap_or(false),
                     args: helper.args,
                 })
             }
@@ -248,7 +248,7 @@ where
     let source: Option<String> = Option::deserialize(deserializer)?;
     source
         .map(|s| {
-            if shellexpand::full(&s)?.starts_with("/") {
+            if shellexpand::full(&s)?.starts_with('/') {
                 shellexpand::full(&s).map(|expanded| PathBuf::from(expanded.as_ref()))
             } else {
                 shellexpand::full(&format!(
@@ -522,12 +522,12 @@ impl ModuleConfig {
                 if dest
                     .to_str()
                     .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
-                    .ends_with("*")
+                    .ends_with('*')
                 {
                     if let Some(s) = &conf.source {
                         if s.to_str()
                             .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
-                            .ends_with("*")
+                            .ends_with('*')
                         {
                             to_expand.push(dest.clone());
                         }
@@ -586,7 +586,7 @@ impl ModuleConfig {
                                     } else {
                                         None
                                     },
-                                    template: conf.template.clone(),
+                                    template: conf.template,
                                 },
                             );
                         }
@@ -656,7 +656,7 @@ impl ActionConfig {
                         bail!("Failed to executed {:?} with args {:?}", file, args);
                     }
                 } else {
-                    let mut cmd = std::process::Command::new(&file)
+                    let mut cmd = std::process::Command::new(file)
                         .args(args)
                         .spawn()
                         .with_context(|| {

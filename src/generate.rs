@@ -22,7 +22,7 @@ async fn generate_file<P: AsRef<Path>>(
     let mut content = String::new();
     if let Some(prepend) = &generator.prepend {
         let rendered = hb
-            .render_template(&prepend, &context)
+            .render_template(prepend, &context)
             .with_context(|| format!("Failed to render template {:?}", &prepend))?;
 
         content.push_str(&rendered);
@@ -42,7 +42,7 @@ async fn generate_file<P: AsRef<Path>>(
 
     if let Some(append) = &generator.append {
         let rendered = hb
-            .render_template(&append, &context)
+            .render_template(append, &context)
             .with_context(|| format!("Failed to render template {:?}", &append))?;
 
         content.push_str(&rendered);

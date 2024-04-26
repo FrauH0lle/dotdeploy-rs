@@ -73,7 +73,7 @@ pub(crate) fn add_module(
             // If dependencies are specified, process each recursively.
             if let Some(dependencies) = &config.depends {
                 for dependency in dependencies {
-                    add_module(&dependency, dotdeploy_config, modules, false, context)?;
+                    add_module(dependency, dotdeploy_config, modules, false, context)?;
                 }
             }
 

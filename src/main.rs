@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+
 use lazy_static::lazy_static;
 
 use std::fmt::Write;
@@ -175,10 +175,7 @@ async fn run() -> Result<bool> {
                         location: common::path_to_string(&module.location)?,
                         user: Some(std::env::var("USER")?),
                         reason: module.reason.clone(),
-                        depends: match module.config.depends.clone() {
-                            Some(deps) => Some(deps.join(", ")),
-                            None => None,
-                        },
+                        depends: module.config.depends.clone().map(|deps| deps.join(", ")),
                         date: chrono::offset::Local::now(),
                     };
                     // User store
@@ -250,7 +247,7 @@ async fn run() -> Result<bool> {
 
                 Ok(true)
             }
-            Some(modules) => {
+            Some(_modules) => {
                 warn!("Not implemented yet");
                 Ok(true)
             }
@@ -284,7 +281,7 @@ async fn run() -> Result<bool> {
                 // let host_module = ["hosts/", &dotdeploy_config.hostname].join("");
                 for module in modules.iter() {
                     modules::add_module(
-                        &module,
+                        module,
                         &dotdeploy_config,
                         &mut module_configs,
                         true,

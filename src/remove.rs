@@ -95,12 +95,10 @@ pub(crate) async fn remove(
             let mut install_cmd: VecDeque<String> = VecDeque::new();
             if let Some(cmd) = &dotdeploy_config.remove_pkg_cmd {
                 install_cmd = cmd.clone();
+            } else if let Some(cmd) = default_cmds.get(&dotdeploy_config.distribution) {
+                install_cmd = cmd.clone()
             } else {
-                if let Some(cmd) = default_cmds.get(&dotdeploy_config.distribution) {
-                    install_cmd = cmd.clone()
-                } else {
-                    bail!("Failed to get package install command")
-                }
+                bail!("Failed to get package install command")
             }
             if let Some(cmd) = install_cmd.pop_front() {
                 // Add packages
@@ -115,7 +113,7 @@ pub(crate) async fn remove(
                     })?;
 
                 if cmd.wait().await?.success() {
-                    ()
+                    
                 } else {
                     bail!("Failed to execute {:?} with args: {:?}", cmd, install_cmd)
                 }

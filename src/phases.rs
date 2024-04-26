@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::CommandFactory;
+
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -43,26 +43,26 @@ impl FileOperation {
     async fn run(&self) {
         match self {
             FileOperation::Copy {
-                source,
-                destination,
-                owner,
-                group,
-                permissions,
-                template,
+                source: _,
+                destination: _,
+                owner: _,
+                group: _,
+                permissions: _,
+                template: _,
             } => {}
             FileOperation::Symlink {
-                source,
-                destination,
-                owner,
-                group,
+                source: _,
+                destination: _,
+                owner: _,
+                group: _,
             } => {}
             FileOperation::Create {
-                content,
-                destination,
-                owner,
-                group,
-                permissions,
-                template,
+                content: _,
+                destination: _,
+                owner: _,
+                group: _,
+                permissions: _,
+                template: _,
             } => {}
         }
     }
@@ -80,9 +80,9 @@ enum Destination {
 impl Destination {
     fn path(&self) -> &PathBuf {
         match self {
-            Destination::Home(path) => return path,
-            Destination::Root(path) => return path,
-        };
+            Destination::Home(path) => path,
+            Destination::Root(path) => path,
+        }
     }
 
     async fn copy<P: AsRef<Path>>(
@@ -123,7 +123,7 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &vec!["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
                     .await?;
 
                 // Remove file if already present
@@ -143,20 +143,16 @@ impl Destination {
 
                     sudo::sudo_exec(
                         "cp",
-                        &vec![
-                            &common::path_to_string(&temp_file)?,
-                            &common::path_to_string(dest)?,
-                        ],
+                        &[&common::path_to_string(&temp_file)?,
+                            &common::path_to_string(dest)?],
                         Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
                     )
                     .await?;
                 } else {
                     sudo::sudo_exec(
                         "cp",
-                        &vec![
-                            &common::path_to_string(&source)?,
-                            &common::path_to_string(dest)?,
-                        ],
+                        &[&common::path_to_string(&source)?,
+                            &common::path_to_string(dest)?],
                         Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
                     )
                     .await?;
@@ -186,16 +182,14 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &vec!["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
                     .await?;
 
                 sudo::sudo_exec(
                     "ln",
-                    &vec![
-                        "-sf",
+                    &["-sf",
                         &common::path_to_string(&source)?,
-                        &common::path_to_string(dest)?,
-                    ],
+                        &common::path_to_string(dest)?],
                     Some(format!("Link {:?} to {:?}", source.as_ref(), &dest).as_str()),
                 )
                 .await?;
@@ -239,7 +233,7 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &vec!["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
                     .await?;
 
                 let temp_file = tempfile::NamedTempFile::new()?;
@@ -262,10 +256,8 @@ impl Destination {
 
                 sudo::sudo_exec(
                     "cp",
-                    &vec![
-                        &common::path_to_string(&temp_file)?,
-                        &common::path_to_string(dest)?,
-                    ],
+                    &[&common::path_to_string(&temp_file)?,
+                        &common::path_to_string(dest)?],
                     None,
                 )
                 .await?;
@@ -878,22 +870,20 @@ fn assign_files_to_phases(
                     // Replace ##dot## with '.' in destinations
                     .replace("##dot##", "."),
             ))
-        } else {
-            if crate::DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
-                Destination::Root(PathBuf::from(
-                    &dest
-                        .to_str()
-                        .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
-                        // Replace ##dot## with '.' in destinations
-                        .replace("##dot##", "."),
-                ))
-            } else {
-                bail!(
-                    "Deploying system files is disabled.
-Check the value of the variable `deploy_sys_files` in `$HOME/.config/dotdeploy/config.toml`"
-                )
-            }
-        };
+        } else if crate::DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
+                        Destination::Root(PathBuf::from(
+                            &dest
+                                .to_str()
+                                .ok_or_else(|| anyhow!("Filename contains invalid Unicode characters"))?
+                                // Replace ##dot## with '.' in destinations
+                                .replace("##dot##", "."),
+                        ))
+                    } else {
+                        bail!(
+                            "Deploying system files is disabled.
+        Check the value of the variable `deploy_sys_files` in `$HOME/.config/dotdeploy/config.toml`"
+                        )
+                    };
 
         // Directly extract the inner fields if permissions is Some, otherwise set them to None
         let (owner, group, perms) = conf.permissions.map_or((None, None, None), |perms| {
@@ -951,7 +941,7 @@ Check the value of the variable `deploy_sys_files` in `$HOME/.config/dotdeploy/c
                     .ok_or_else(|| anyhow!("'content' is required for 'create' operations"))?;
 
                 FileOperation::Create {
-                    content: String::from(content),
+                    content: content,
                     destination,
                     owner: owner.map(String::from),
                     group: group.map(String::from),

@@ -218,8 +218,8 @@ impl ConfigFile {
             hostname: parsed_data
                 .hostname
                 .unwrap_or_else(|| Self::get_hostname().unwrap()),
-            use_sudo: parsed_data.use_sudo.unwrap_or_else(|| true),
-            deploy_sys_files: parsed_data.deploy_sys_files.unwrap_or_else(|| true),
+            use_sudo: parsed_data.use_sudo.unwrap_or(true),
+            deploy_sys_files: parsed_data.deploy_sys_files.unwrap_or(true),
             intall_pkg_cmd: parsed_data.intall_pkg_cmd,
             remove_pkg_cmd: parsed_data.remove_pkg_cmd
         })
@@ -268,13 +268,13 @@ mod tests {
             PathBuf::from(shellexpand::full("~/.dotfiles/hosts").unwrap().to_string())
         );
 
-        assert_eq!(conf.distribution.is_empty(), false);
-        assert_eq!(conf.hostname.is_empty(), false);
-        assert_eq!(conf.use_sudo, true);
-        assert_eq!(conf.deploy_sys_files, true);
+        assert!(!conf.distribution.is_empty());
+        assert!(!conf.hostname.is_empty());
+        assert!(conf.use_sudo);
+        assert!(conf.deploy_sys_files);
 
         // With config file
-        let _ = std::fs::create_dir_all("/tmp/dotdeploy/")?;
+        std::fs::create_dir_all("/tmp/dotdeploy/")?;
         let _ = std::fs::write("/tmp/dotdeploy/config.toml", toml::to_string(&test_config)?);
 
         let conf = ConfigFile::init()?;
@@ -288,9 +288,9 @@ mod tests {
             modules_root: Some("/bar".to_string()),
             hosts_root: Some("/baz".to_string()),
         };
-        let _ = std::fs::remove_dir_all("/tmp/dotdeploy/")?;
+        std::fs::remove_dir_all("/tmp/dotdeploy/")?;
 
-        let _ = std::fs::create_dir_all("/tmp/dotdeploy/")?;
+        std::fs::create_dir_all("/tmp/dotdeploy/")?;
         let _ = std::fs::write(
             "/tmp/dotdeploy/config.toml",
             toml::to_string(&test_config2)?,
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(conf.config_root, PathBuf::from("/foo"));
         assert_eq!(conf.modules_root, PathBuf::from("/bar"));
         assert_eq!(conf.hosts_root, PathBuf::from("/baz"));
-        let _ = std::fs::remove_dir_all("/tmp/dotdeploy/")?;
+        std::fs::remove_dir_all("/tmp/dotdeploy/")?;
 
         Ok(())
     }

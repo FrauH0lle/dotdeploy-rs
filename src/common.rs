@@ -57,7 +57,7 @@ pub(crate) async fn check_file_exists<P: AsRef<Path>>(path: P) -> Result<bool> {
         Ok(false) => Ok(false),
         Ok(true) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            Ok(sudo::sudo_exec_success("test", &vec!["-e", &path_to_string(path)?], None).await?)
+            Ok(sudo::sudo_exec_success("test", &["-e", &path_to_string(path)?], None).await?)
         }
         Err(e) => {
             Err(e).with_context(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
@@ -84,11 +84,11 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
 
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             if let Some(s) = source {
-                if sudo::sudo_exec_success("test", &vec!["-L", &path_to_string(&path)?], None)
+                if sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None)
                     .await?
                 {
                     let orig = String::from_utf8(
-                        sudo::sudo_exec_output("readlink", &vec![&path_to_string(&path)?], None)
+                        sudo::sudo_exec_output("readlink", &[path_to_string(&path)?], None)
                             .await?
                             .stdout,
                     )?;
@@ -98,7 +98,7 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
                 }
             } else {
                 Ok(
-                    sudo::sudo_exec_success("test", &vec!["-L", &path_to_string(&path)?], None)
+                    sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None)
                         .await?,
                 )
             }
@@ -114,7 +114,7 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     match fs::remove_file(&path).await {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            Ok(sudo::sudo_exec("rm", &vec!["-f", &path_to_string(&path)?], None).await?)
+            Ok(sudo::sudo_exec("rm", &["-f", &path_to_string(&path)?], None).await?)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             warn!("{}", e);
@@ -145,11 +145,7 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
                 )
                 .await?;
                 if output.status.success() {
-                    if output.stdout.is_empty() {
-                        false
-                    } else {
-                        true
-                    }
+                    !output.stdout.is_empty()
                 } else {
                     bail!(
                         "Failed to check if directory {} is empty: {}",
@@ -170,7 +166,7 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
             match fs::remove_dir(path).await {
                 Ok(_) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    sudo::sudo_exec("rmdir", &[&path_to_string(&path)?], None).await?
+                    sudo::sudo_exec("rmdir", &[&path_to_string(path)?], None).await?
                 }
                 Err(e) => {
                     Err(e).with_context(|| format!("Failed to remove directory {:?}", path))?
@@ -190,7 +186,7 @@ async fn sudo_calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result<Strin
 
     let output = sudo::sudo_exec_output(
         "sha256sum",
-        &vec![&path],
+        &[&path],
         Some(format!("Calculate checksum of {:?}", path).as_str()),
     )
     .await?
@@ -213,14 +209,14 @@ pub(crate) async fn calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result
     let checksum = match fs::read(&path).await {
         Ok(content) => {
             // Perform the hashing in a blocking task to not block the async executor
-            let checksum = tokio::task::spawn_blocking(move || {
+             // Await the spawned task, then propagate errors
+            tokio::task::spawn_blocking(move || {
                 let mut hasher = Sha256::new();
                 hasher.update(&content);
                 // Convert the hash to a hexadecimal string
                 format!("{:x}", hasher.finalize())
             })
-            .await?; // Await the spawned task, then propagate errors
-            checksum
+            .await?
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             sudo_calculate_sha256_checksum(path).await?
@@ -240,7 +236,7 @@ pub(crate) fn perms_int_to_str(p: u32) -> Result<String> {
 }
 
 pub(crate) fn perms_str_to_int<S: AsRef<str>>(p: S) -> Result<u32> {
-    Ok(u32::from_str_radix(p.as_ref(), 8).context("Failed to convert permission string to u32")?)
+    u32::from_str_radix(p.as_ref(), 8).context("Failed to convert permission string to u32")
 }
 
 pub(crate) fn user_to_uid<S: AsRef<str>>(u: S) -> Result<u32> {
@@ -278,12 +274,10 @@ pub(crate) async fn get_file_metadata<P: AsRef<Path>>(path: P) -> Result<FileMet
 
             sudo::sudo_exec(
                 "cp",
-                &vec![
-                    "--preserve",
+                &["--preserve",
                     "--no-dereference",
                     &path_to_string(&path)?,
-                    &temp_path_str,
-                ],
+                    &temp_path_str],
                 Some(
                     format!(
                         "Create temporary copy of {:?} for metadata retrieval",
@@ -332,7 +326,7 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 sudo::sudo_exec(
                     "chmod",
-                    &vec![&perms_int_to_str(permissions)?, &path_to_string(&path)?],
+                    &[&perms_int_to_str(permissions)?, &path_to_string(&path)?],
                     None,
                 )
                 .await?
@@ -346,7 +340,7 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 sudo::sudo_exec(
                     "chown",
-                    &vec![format!("{}:{}", uid, gid).as_str(), &path_to_string(&path)?],
+                    &[format!("{}:{}", uid, gid).as_str(), &path_to_string(&path)?],
                     None,
                 )
                 .await?
@@ -367,7 +361,7 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile;
+    
 
     #[test]
     fn test_path_to_string() -> Result<()> {

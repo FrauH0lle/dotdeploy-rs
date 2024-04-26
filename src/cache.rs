@@ -201,7 +201,7 @@ impl Store {
 
                     sudo::sudo_exec(
                         "mkdir",
-                        &vec!["-p", common::path_to_string(&self.path)?.as_str()],
+                        &["-p", common::path_to_string(&self.path)?.as_str()],
                         Some("Create directory for system store DB"),
                     )
                     .await
@@ -212,7 +212,7 @@ impl Store {
                     // access it.
                     sudo::sudo_exec(
                         "chmod",
-                        &vec!["777", common::path_to_string(&self.path)?.as_str()],
+                        &["777", common::path_to_string(&self.path)?.as_str()],
                         Some("Adjusting permissions of system store DB directory"),
                     )
                     .await
@@ -225,7 +225,7 @@ impl Store {
                         "Store directory '{}' exists already, continuing.",
                         &self.path.display()
                     );
-                    ()
+                    
                 }
                 Err(e) => bail!("{}", e),
             }
@@ -248,7 +248,7 @@ impl Store {
                         "Store directory '{}' exists already, continuing.",
                         &self.path.display()
                     );
-                    ()
+                    
                 }
                 Err(e) => bail!("{}", e),
             }
@@ -264,7 +264,7 @@ impl Store {
     /// Returns `Ok()` if successful.
     async fn init(&mut self) -> Result<(), SQLiteError> {
         // Check if database directory exists and if not, create it.
-        self.create_dir().await.map_err(|e| SQLiteError::Other(e))?;
+        self.create_dir().await.map_err(SQLiteError::Other)?;
 
         // Set full path
         self.path = self.path.join("store.sqlite");
@@ -380,7 +380,7 @@ impl Store {
             pool.close();
             Ok(())
         } else {
-            return Err(anyhow!("Store database not initialized!").into());
+            Err(anyhow!("Store database not initialized!").into())
         }
     }
 
@@ -389,7 +389,7 @@ impl Store {
         if let Some(pool) = &self.pool {
             Ok(pool.get().await?)
         } else {
-            return Err(anyhow!("Store database not initialized!").into());
+            Err(anyhow!("Store database not initialized!").into())
         }
     }
     // Module operations
@@ -720,7 +720,7 @@ impl Store {
     ) -> Result<Option<(String, String)>, SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
         let filename_str = common::path_to_string(filename)?;
-        Ok(self.get_file_checksum(filename_str, "source").await?)
+        self.get_file_checksum(filename_str, "source").await
     }
 
     /// Retrieve checksum of destination file from store database.
@@ -730,7 +730,7 @@ impl Store {
     ) -> Result<Option<(String, String)>, SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
         let filename_str = common::path_to_string(filename)?;
-        Ok(self.get_file_checksum(filename_str, "destination").await?)
+        self.get_file_checksum(filename_str, "destination").await
     }
 
     /// Retrieve all checksums of either source or destination files from store database.
@@ -788,14 +788,14 @@ impl Store {
     pub(crate) async fn get_all_src_checksums(
         &self,
     ) -> Result<Vec<(Option<String>, Option<String>)>, SQLiteError> {
-        Ok(self.get_all_checksums("source").await?)
+        self.get_all_checksums("source").await
     }
 
     /// Retrieve all destination checksums from store database.
     pub(crate) async fn get_all_dest_checksums(
         &self,
     ) -> Result<Vec<(Option<String>, Option<String>)>, SQLiteError> {
-        Ok(self.get_all_checksums("destination").await?)
+        self.get_all_checksums("destination").await
     }
 
     //
@@ -823,12 +823,12 @@ impl Store {
             let user_id = metadata
                 .uid
                 .ok_or_else(|| anyhow!("Could not get UID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             let group_id = metadata
                 .gid
                 .ok_or_else(|| anyhow!("Could not get GID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             StoreBackup {
                 path: file_path_str,
@@ -849,22 +849,22 @@ impl Store {
             let user_id = metadata
                 .uid
                 .ok_or_else(|| anyhow!("Could not get UID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             let group_id = metadata
                 .gid
                 .ok_or_else(|| anyhow!("Could not get GID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             let permissions = metadata
                 .permissions
                 .ok_or_else(|| anyhow!("Could not get permissions of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             let checksum = metadata
                 .checksum
                 .ok_or_else(|| anyhow!("Could not get checksum of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e.into()))?;
+                .map_err(|e| SQLiteError::Other(e))?;
 
             let content = match tokio::fs::read(&file_path).await {
                 Ok(c) => c,
@@ -875,12 +875,10 @@ impl Store {
 
                     sudo::sudo_exec(
                         "cp",
-                        &vec![
-                            "--preserve",
+                        &["--preserve",
                             "--no-dereference",
                             &common::path_to_string(&file_path)?,
-                            &temp_path_str,
-                        ],
+                            &temp_path_str],
                         Some(
                             format!(
                                 "Create temporary copy of {:?} for backup creation",
@@ -1046,7 +1044,7 @@ impl Store {
             })
             .await??;
 
-        let owner: Vec<&str> = result.owner.split(":").collect();
+        let owner: Vec<&str> = result.owner.split(':').collect();
 
         match result.file_type.as_str() {
             "link" => match tokio::fs::symlink(result.link_source.as_ref().unwrap(), &to).await {
@@ -1075,11 +1073,9 @@ impl Store {
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     sudo::sudo_exec(
                         "ln",
-                        &vec![
-                            "-sf",
+                        &["-sf",
                             result.link_source.as_ref().unwrap(),
-                            to.as_ref().to_str().unwrap(),
-                        ],
+                            to.as_ref().to_str().unwrap()],
                         None,
                     )
                     .await?;
@@ -1168,11 +1164,9 @@ impl Store {
                 if move_file {
                     sudo::sudo_exec(
                         "cp",
-                        &vec![
-                            "--preserve",
+                        &["--preserve",
                             &write_dest.to_str().unwrap(),
-                            to.as_ref().to_str().unwrap(),
-                        ],
+                            to.as_ref().to_str().unwrap()],
                         None,
                     )
                     .await?;
@@ -1224,7 +1218,7 @@ pub(crate) async fn init_user_store(path: Option<PathBuf>) -> Result<Store, SQLi
     match user_store {
         Ok(()) => Ok(store),
         Err(e) => {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "Failed to initialize user store in `{:?}`:\n {:?}",
                 &store_path,
                 e
@@ -1255,7 +1249,7 @@ pub(crate) async fn init_system_store() -> Result<Store, SQLiteError> {
             Ok(store)
         }
         Err(e) => {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "Failed to initialize system store in `/var/lib/dotdeploy`:\n {:?}",
                 e
             )
@@ -1519,7 +1513,7 @@ mod tests {
             .await
             .map_err(|e| e.into_anyhow())?;
         tokio::fs::remove_file(temp_path.path().join("foo.txt")).await?;
-        assert_ne!(temp_path.path().join("foo.txt").exists(), true);
+        assert!(!temp_path.path().join("foo.txt").exists());
 
         // Restore file
         store
@@ -1529,7 +1523,7 @@ mod tests {
             )
             .await
             .map_err(|e| e.into_anyhow())?;
-        assert_eq!(temp_path.path().join("foo.txt").exists(), true);
+        assert!(temp_path.path().join("foo.txt").exists());
 
         let meta = temp_path.path().join("foo.txt").metadata()?;
         let mode = meta.mode();
