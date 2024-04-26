@@ -1,12 +1,9 @@
 use std::ffi::OsStr;
-// use std::io::{stdout, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-// use std::sync::{Arc, Mutex};
-use tokio::io::{stdout, AsyncWriteExt};
-use tokio::sync::Mutex;
 use std::thread;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use lazy_static::lazy_static;
@@ -40,11 +37,10 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
             // Double-check the flag to handle race conditions
             is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
             if !is_running {
-                let sudo_cmd = "sudo".to_string();
-                let flags = vec!["-v".to_string()];
-                update_sudo(&sudo_cmd, &flags).await?;
-                tokio::spawn(async move {
-                    sudo_loop(&sudo_cmd, &flags).await
+                let sudo_cmd = "sudo";
+                let flags = vec!["-v"];
+                std::thread::spawn(move || {
+                    sudo_loop(&sudo_cmd, &flags)
                 });
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
             }
@@ -74,10 +70,10 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 ///
 /// *Returns `Ok(())` if the loop runs indefinitely without error. Returns an `Err` if executing the
 /// `sudo` command fails.
-async fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
+fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(250)).await;
-        update_sudo(sudo, flags).await?;
+        update_sudo(sudo, flags)?;
+        thread::sleep(Duration::from_secs(250));
     }
 }
 
@@ -95,12 +91,9 @@ async fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
 ///
 /// * Returns `Ok(())` if the `sudo` command executes successfully. Returns an `Err` if the command
 /// fails to execute or completes with a non-success status.
-async fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
-    stdout().flush().await?;
+fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     let status = Command::new(sudo)
         .args(flags)
-        // This allows sudo to read the password from the terminal
-        .stdin(Stdio::inherit())
         .status()
         .with_context(|| "Failed to execute sudo command")?;
 
