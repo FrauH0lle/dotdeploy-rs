@@ -369,7 +369,6 @@ mod tests {
     use super::*;
     use tempfile;
 
-
     #[test]
     fn test_path_to_string() -> Result<()> {
         assert_eq!(

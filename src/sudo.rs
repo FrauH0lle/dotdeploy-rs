@@ -39,9 +39,7 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
             if !is_running {
                 let sudo_cmd = "sudo";
                 let flags = vec!["-v"];
-                std::thread::spawn(move || {
-                    sudo_loop(&sudo_cmd, &flags)
-                });
+                std::thread::spawn(move || sudo_loop(&sudo_cmd, &flags));
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
             }
         } else {
@@ -187,4 +185,34 @@ pub(crate) async fn sudo_exec_success<S: AsRef<OsStr>>(
         .with_context(|| format!("Failed to execute sudo {} {}", cmd, format_args(args)))?;
 
     Ok(status.success())
+}
+
+//
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_sudo_exec() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(sudo_exec("echo", &["success"], None).await.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sudo_exec_output() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let output = sudo_exec_output("echo", &["success"], None).await?;
+        assert!(!output.stdout.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sudo_exec_success() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(sudo_exec_success("echo", &["success"], None).await?);
+        Ok(())
+    }
 }
