@@ -360,3 +360,119 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
 
     Ok(())
 }
+
+//
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile;
+
+
+    #[test]
+    fn test_path_to_string() -> Result<()> {
+        assert_eq!(
+            path_to_string(PathBuf::from("/foo/bar.txt"))?,
+            "/foo/bar.txt".to_string()
+        );
+        assert_eq!(
+            path_to_string(Path::new("/foo/bar.txt"))?,
+            "/foo/bar.txt".to_string()
+        );
+        // Test for invalid unicode character, adapted from
+        // https://github.com/rust-lang/cargo/pull/9226/files#diff-9977238c61100eb9f319febd88e2434b304ac401f0da3b50d00d7c91de319e2fR2957-R2966
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        assert!(path_to_string(PathBuf::from(OsString::from_vec(vec![255]))).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_check_file_exists() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+        assert!(check_file_exists(temp_file).await?);
+        assert!(!check_file_exists("/tmp/doesnotexist.txt").await?);
+
+        // Test with elevated permissions
+        let temp_dir = tempfile::tempdir()?;
+        let temp_file = temp_dir.path().join("test.txt");
+        tokio::fs::File::create(&temp_file).await?;
+        sudo::sudo_exec(
+            "chown",
+            &["root:root", &temp_dir.path().to_str().unwrap()],
+            None,
+        )
+        .await?;
+        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+        assert!(check_file_exists(temp_file).await?);
+        assert!(!check_file_exists(temp_dir.path().join("doesnotexist.txt")).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_parents() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path1 = temp_dir.path().join("test1");
+        fs::create_dir(&temp_path1).await?;
+        assert!(&temp_path1.exists());
+
+        let temp_path2 = temp_dir.path().join("test 2");
+        fs::create_dir(&temp_path2).await?;
+        assert!(&temp_path2.exists());
+
+        // Create a file
+        fs::write(&temp_path1.join("text.txt"), "hi").await?;
+        // Try to delete non-empty dir
+        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        assert!(&temp_path1.exists());
+        // Remove file and try again
+        fs::remove_file(&temp_path1.join("text.txt")).await?;
+        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        assert!(!&temp_path1.exists());
+        delete_parents(&temp_path2.join("text.txt"), true).await?;
+        assert!(!&temp_path2.exists());
+        // Verify that the grandparent got deleted as well
+        assert!(!&temp_dir.path().exists());
+
+        // Test with elevated permissions
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path1 = temp_dir.path().join("test1");
+        fs::create_dir(&temp_path1).await?;
+        assert!(&temp_path1.exists());
+
+        let temp_path2 = temp_dir.path().join("test 2");
+        fs::create_dir(&temp_path2).await?;
+        assert!(&temp_path2.exists());
+
+        // Create a file
+        fs::write(&temp_path1.join("text.txt"), "hi").await?;
+        // Change owner and permissions
+        sudo::sudo_exec("chown", &["root:root", &temp_path1.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chown", &["root:root", &temp_path2.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", &temp_path1.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", &temp_path2.to_str().unwrap()], None).await?;
+
+        // Try to delete non-empty dir
+        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        assert!(&temp_path1.exists());
+        // Remove file and try again
+        sudo::sudo_exec(
+            "rm",
+            &["-f", &temp_path1.join("text.txt").to_str().unwrap()],
+            None,
+        )
+        .await?;
+        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        assert!(!&temp_path1.exists());
+        delete_parents(&temp_path2.join("text.txt"), true).await?;
+        assert!(!&temp_path2.exists());
+        // Verify that the grandparent got deleted as well
+        assert!(!&temp_dir.path().exists());
+        Ok(())
+    }
+}
