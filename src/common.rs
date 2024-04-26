@@ -53,7 +53,6 @@ pub(crate) fn path_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
 
 /// Test if a file exists, elevating privileges if a PermissionDenied error is encountered.
 pub(crate) async fn check_file_exists<P: AsRef<Path>>(path: P) -> Result<bool> {
-    // error!("About to blow bicth! {:?}", &path.as_ref());
     match path.as_ref().try_exists() {
         Ok(false) => Ok(false),
         Ok(true) => Ok(true),
@@ -90,7 +89,8 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
                 {
                     let orig = String::from_utf8(
                         sudo::sudo_exec_output("readlink", &vec![&path_to_string(&path)?], None)
-                            .await?,
+                            .await?
+                            .stdout,
                     )?;
                     Ok(&orig.as_ref() == s.as_ref())
                 } else {
@@ -177,7 +177,8 @@ async fn sudo_calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result<Strin
         &vec![&path],
         Some(format!("Calculate checksum of {:?}", path).as_str()),
     )
-    .await?;
+    .await?
+    .stdout;
     if output.is_empty() {
         bail!("sha256sum did not return any output")
     } else {

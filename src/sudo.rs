@@ -103,8 +103,16 @@ fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     Ok(())
 }
 
+/// Format arguments given into a single string for printing
+fn format_args<S: AsRef<OsStr>>(args: &[S]) -> String {
+    args.iter()
+        .map(|s| s.as_ref().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Execute a command with sudo priviliges
-pub(crate) async fn sudo_exec<S: AsRef<OsStr> + std::fmt::Debug>(
+pub(crate) async fn sudo_exec<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
     reason: Option<&str>,
@@ -112,49 +120,52 @@ pub(crate) async fn sudo_exec<S: AsRef<OsStr> + std::fmt::Debug>(
     let reason = if let Some(reason) = reason {
         reason.to_string()
     } else {
-        format!("Running {:?} with args: {:?}", cmd, args)
+        format!("Executing: sudo {} {}", cmd, format_args(args))
     };
-    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason)
+        .await
+        .context("Failed to spawn sudo")?;
 
-    let mut cmd = tokio::process::Command::new("sudo")
+    let mut exec = tokio::process::Command::new("sudo")
         .arg(cmd)
         .args(args)
         .spawn()
-        .with_context(|| format!("Failed to spawn {:?} with args: {:?}", cmd, args))?;
+        .with_context(|| format!("Failed to execute sudo {} {}", cmd, format_args(args)))?;
 
-    if cmd.wait().await?.success() {
+    if exec.wait().await?.success() {
         Ok(())
     } else {
-        bail!("Failed to execute {:?} with args: {:?}", cmd, args)
+        bail!("Failed to execute sudo {} {}", cmd, format_args(args))
     }
 }
 
 /// Execute a command with sudo priviliges and return stdout
-pub(crate) async fn sudo_exec_output<S: AsRef<OsStr> + std::fmt::Debug>(
+pub(crate) async fn sudo_exec_output<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
     reason: Option<&str>,
-) -> Result<Vec<u8>> {
+) -> Result<std::process::Output> {
     let reason = if let Some(reason) = reason {
         reason.to_string()
     } else {
-        format!("Running {:?} with args: {:?}", cmd, args)
+        format!("Executing: sudo {} {}", cmd, format_args(args))
     };
-    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason)
+        .await
+        .context("Failed to spawn sudo")?;
 
     let output = tokio::process::Command::new("sudo")
         .arg(cmd)
         .args(args)
         .output()
         .await
-        .with_context(|| format!("Failed to execute {:?} with args: {:?}", cmd, args))?
-        .stdout;
+        .with_context(|| format!("Failed to execute sudo {} {}", cmd, format_args(args)))?;
 
     Ok(output)
 }
 
 /// Execute a command with sudo priviliges and return true if exited succesfully.
-pub(crate) async fn sudo_exec_success<S: AsRef<OsStr> + std::fmt::Debug>(
+pub(crate) async fn sudo_exec_success<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
     reason: Option<&str>,
@@ -162,16 +173,18 @@ pub(crate) async fn sudo_exec_success<S: AsRef<OsStr> + std::fmt::Debug>(
     let reason = if let Some(reason) = reason {
         reason.to_string()
     } else {
-        format!("Running {:?} with args: {:?}", cmd, args)
+        format!("Executing: sudo {} {}", cmd, format_args(args))
     };
-    spawn_sudo_maybe(reason).await.context("Failed to spawn sudo")?;
+    spawn_sudo_maybe(reason)
+        .await
+        .context("Failed to spawn sudo")?;
 
     let status = tokio::process::Command::new("sudo")
         .arg(cmd)
         .args(args)
         .status()
         .await
-        .with_context(|| format!("Failed to execute {:?} with args: {:?}", cmd, args))?;
+        .with_context(|| format!("Failed to execute sudo {} {}", cmd, format_args(args)))?;
 
     Ok(status.success())
 }
