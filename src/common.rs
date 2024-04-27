@@ -84,23 +84,20 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
 
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             if let Some(s) = source {
-                if sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None)
-                    .await?
-                {
+                if sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await? {
                     let orig = String::from_utf8(
                         sudo::sudo_exec_output("readlink", &[path_to_string(&path)?], None)
                             .await?
                             .stdout,
-                    )?;
+                    )?
+                    .trim()
+                    .to_string();
                     Ok(&orig.as_ref() == s.as_ref())
                 } else {
                     Ok(false)
                 }
             } else {
-                Ok(
-                    sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None)
-                        .await?,
-                )
+                Ok(sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await?)
             }
         }
         Err(e) => {
@@ -180,36 +177,13 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
     Ok(())
 }
 
-/// Calculate sha256 checksum with sudo
-async fn sudo_calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result<String> {
-    let path = path_to_string(path)?;
-
-    let output = sudo::sudo_exec_output(
-        "sha256sum",
-        &[&path],
-        Some(format!("Calculate checksum of {:?}", path).as_str()),
-    )
-    .await?
-    .stdout;
-    if output.is_empty() {
-        bail!("sha256sum did not return any output")
-    } else {
-        let checksum = String::from_utf8(output)?
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| anyhow!("Failed to split whitespace"))?
-            .to_string();
-        Ok(checksum)
-    }
-}
-
 /// Calculate sha256 checksum and elevate privileges if necessary
 pub(crate) async fn calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result<String> {
     // Open the file asynchronously
     let checksum = match fs::read(&path).await {
         Ok(content) => {
             // Perform the hashing in a blocking task to not block the async executor
-             // Await the spawned task, then propagate errors
+            // Await the spawned task, then propagate errors
             tokio::task::spawn_blocking(move || {
                 let mut hasher = Sha256::new();
                 hasher.update(&content);
@@ -219,7 +193,20 @@ pub(crate) async fn calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result
             .await?
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            sudo_calculate_sha256_checksum(path).await?
+            let output = sudo::sudo_exec_output("sha256sum", &[path.as_ref()], None)
+                .await?
+                .stdout;
+
+            if output.is_empty() {
+                bail!("sha256sum {:?} did not return any output", path.as_ref())
+            } else {
+                String::from_utf8(output)?
+                    .split_whitespace()
+                    .next()
+                    .ok_or_else(|| anyhow!("Failed to split whitespace"))?
+                    .trim()
+                    .to_string()
+            }
         }
         Err(e) => Err(e)
             .with_context(|| format!("Falied to calculate checksum of {:?}", &path.as_ref()))?,
@@ -274,10 +261,12 @@ pub(crate) async fn get_file_metadata<P: AsRef<Path>>(path: P) -> Result<FileMet
 
             sudo::sudo_exec(
                 "cp",
-                &["--preserve",
+                &[
+                    "--preserve",
                     "--no-dereference",
                     &path_to_string(&path)?,
-                    &temp_path_str],
+                    &temp_path_str,
+                ],
                 Some(
                     format!(
                         "Create temporary copy of {:?} for metadata retrieval",
@@ -331,7 +320,8 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
                 )
                 .await?
             }
-            Err(e) => bail!("Failed to set permissions for {:?}.\n{e}", &path.as_ref()),
+            Err(e) => Err(e)
+                .with_context(|| format!("Failed to set permissions for {:?}", &path.as_ref()))?,
         }
     }
     if let (Some(uid), Some(gid)) = (metadata.uid, metadata.gid) {
@@ -345,10 +335,9 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
                 )
                 .await?
             }
-            Err(e) => bail!(
-                "Failed to set user and group for {:?}.\n{e}",
-                &path.as_ref()
-            ),
+            Err(e) => Err(e).with_context(|| {
+                format!("Failed to set user and group for {:?}", &path.as_ref())
+            })?,
         }
     }
 
@@ -361,7 +350,6 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_path_to_string() -> Result<()> {
@@ -402,6 +390,69 @@ mod tests {
         sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
         assert!(check_file_exists(temp_file).await?);
         assert!(!check_file_exists(temp_dir.path().join("doesnotexist.txt")).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_check_link_exists() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let temp_file_pathbuf = PathBuf::from(&temp_file.path());
+        let temp_dir = tempfile::tempdir()?;
+        let temp_link = temp_dir.path().join("foo.txt");
+        fs::symlink(&temp_file, &temp_link).await?;
+        assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
+        assert!(check_link_exists(&temp_link, None).await?);
+
+        // Test with elevated permissions
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let temp_file_pathbuf = PathBuf::from(&temp_file.path());
+        let temp_dir = tempfile::tempdir()?;
+        let temp_link = temp_dir.path().join("foo.txt");
+        fs::symlink(&temp_file, &temp_link).await?;
+
+        sudo::sudo_exec(
+            "chown",
+            &["root:root", &temp_dir.path().to_str().unwrap()],
+            None,
+        )
+        .await?;
+        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+
+        assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
+        assert!(check_link_exists(&temp_link, None).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_file() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+
+        assert!(check_file_exists(&temp_file).await?);
+        assert!(delete_file(&temp_file).await.is_ok());
+        assert!(!check_file_exists(&temp_file).await?);
+        // Return Ok(()) if file is not found
+        assert!(delete_file(&temp_file).await.is_ok());
+
+        // Test with elevated permissions
+        let temp_file = tempfile::NamedTempFile::new()?;
+
+        sudo::sudo_exec(
+            "chown",
+            &["root:root", &temp_file.path().to_str().unwrap()],
+            None,
+        )
+        .await?;
+        sudo::sudo_exec("chmod", &["600", &temp_file.path().to_str().unwrap()], None).await?;
+
+        assert!(check_file_exists(&temp_file).await?);
+        assert!(delete_file(&temp_file).await.is_ok());
+        assert!(!check_file_exists(&temp_file).await?);
+        // Return Ok(()) if file is not found
+        assert!(delete_file(&temp_file).await.is_ok());
         Ok(())
     }
 
@@ -466,6 +517,28 @@ mod tests {
         assert!(!&temp_path2.exists());
         // Verify that the grandparent got deleted as well
         assert!(!&temp_dir.path().exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sha256_checksum() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let checksum = calculate_sha256_checksum(&temp_file).await?;
+        assert!(!checksum.is_empty());
+
+        // Test with elevated permissions
+        sudo::sudo_exec(
+            "chown",
+            &["root:root", &temp_file.path().to_str().unwrap()],
+            None,
+        )
+            .await?;
+        sudo::sudo_exec("chmod", &["600", &temp_file.path().to_str().unwrap()], None).await?;
+
+        let checksum_sudo = calculate_sha256_checksum(&temp_file).await?;
+        assert_eq!(checksum, checksum_sudo);
         Ok(())
     }
 }
