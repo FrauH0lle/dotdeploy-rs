@@ -197,22 +197,26 @@ mod tests {
     #[tokio::test]
     async fn test_sudo_exec() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(sudo_exec("echo", &["success"], None).await.is_ok());
+        assert!(sudo_exec("test", &["4", "-gt", "0"], None).await.is_ok());
+        assert!(sudo_exec("test", &["4", "-eq", "0"], None).await.is_err());
         Ok(())
     }
 
     #[tokio::test]
     async fn test_sudo_exec_output() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let output = sudo_exec_output("echo", &["success"], None).await?;
+        let output = sudo_exec_output("echo", &["-n", "success"], None).await?;
         assert!(!output.stdout.is_empty());
+        let output = sudo_exec_output("echo", &["-n"], None).await?;
+        assert!(output.stdout.is_empty());
         Ok(())
     }
 
     #[tokio::test]
     async fn test_sudo_exec_success() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(sudo_exec_success("echo", &["success"], None).await?);
+        assert!(sudo_exec_success("test", &["4", "-gt", "0"], None).await?);
+        assert!(!sudo_exec_success("test", &["4", "-eq", "0"], None).await?);
         Ok(())
     }
 }
