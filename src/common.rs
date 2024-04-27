@@ -215,6 +215,7 @@ pub(crate) async fn calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result
     Ok(checksum)
 }
 
+/// Convert permissions from u32 to string format
 pub(crate) fn perms_int_to_str(p: u32) -> Result<String> {
     let s = format!("{:o}", p);
     // Take only the last three digits of the conversion result
@@ -222,10 +223,12 @@ pub(crate) fn perms_int_to_str(p: u32) -> Result<String> {
     Ok(s[split_pos..].to_string())
 }
 
+/// Convert permissions from string to u32 format
 pub(crate) fn perms_str_to_int<S: AsRef<str>>(p: S) -> Result<u32> {
     u32::from_str_radix(p.as_ref(), 8).context("Failed to convert permission string to u32")
 }
 
+/// Convert user name to uid
 pub(crate) fn user_to_uid<S: AsRef<str>>(u: S) -> Result<u32> {
     Ok(nix::unistd::User::from_name(u.as_ref())
         .unwrap()
@@ -234,6 +237,7 @@ pub(crate) fn user_to_uid<S: AsRef<str>>(u: S) -> Result<u32> {
         .as_raw())
 }
 
+/// Convert group name to gid
 pub(crate) fn group_to_gid<S: AsRef<str>>(u: S) -> Result<u32> {
     Ok(nix::unistd::Group::from_name(u.as_ref())
         .unwrap()
@@ -242,6 +246,7 @@ pub(crate) fn group_to_gid<S: AsRef<str>>(u: S) -> Result<u32> {
         .as_raw())
 }
 
+/// File metadata struct used by [get_file_metadata] and [set_file_metadata]
 pub(crate) struct FileMetadata {
     pub(crate) uid: Option<u32>,
     pub(crate) gid: Option<u32>,
