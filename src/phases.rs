@@ -941,7 +941,7 @@ fn assign_files_to_phases(
                     .ok_or_else(|| anyhow!("'content' is required for 'create' operations"))?;
 
                 FileOperation::Create {
-                    content: content,
+                    content,
                     destination,
                     owner: owner.map(String::from),
                     group: group.map(String::from),

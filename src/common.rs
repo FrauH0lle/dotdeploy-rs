@@ -253,7 +253,7 @@ pub(crate) struct FileMetadata {
 
 /// Get file metadata, elevating privileges if necessary
 pub(crate) async fn get_file_metadata<P: AsRef<Path>>(path: P) -> Result<FileMetadata> {
-    let metadata = match tokio::fs::symlink_metadata(&path).await {
+    let metadata = match fs::symlink_metadata(&path).await {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             let temp_file = tempfile::NamedTempFile::new()?;
@@ -277,7 +277,7 @@ pub(crate) async fn get_file_metadata<P: AsRef<Path>>(path: P) -> Result<FileMet
             )
             .await?;
 
-            tokio::fs::symlink_metadata(&temp_file)
+            fs::symlink_metadata(&temp_file)
                 .await
                 .with_context(|| format!("Failed to get metadata of {:?}", &temp_file))?
         }
@@ -380,7 +380,7 @@ mod tests {
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
         let temp_file = temp_dir.path().join("test.txt");
-        tokio::fs::File::create(&temp_file).await?;
+        fs::File::create(&temp_file).await?;
         sudo::sudo_exec(
             "chown",
             &["root:root", &temp_dir.path().to_str().unwrap()],
@@ -534,11 +534,126 @@ mod tests {
             &["root:root", &temp_file.path().to_str().unwrap()],
             None,
         )
-            .await?;
+        .await?;
         sudo::sudo_exec("chmod", &["600", &temp_file.path().to_str().unwrap()], None).await?;
 
         let checksum_sudo = calculate_sha256_checksum(&temp_file).await?;
         assert_eq!(checksum, checksum_sudo);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_perms_int_to_str() -> Result<()> {
+        assert_eq!(perms_int_to_str(33188)?, "644");
+        assert_eq!(perms_int_to_str(0o644)?, "644");
+        assert_eq!(perms_int_to_str(0o600)?, "600");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_perms_str_to_int() -> Result<()> {
+        assert_eq!(perms_str_to_int("644")?, 0o644);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_user_to_uid() -> Result<()> {
+        assert_eq!(user_to_uid("root")?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_group_to_gid() -> Result<()> {
+        assert_eq!(group_to_gid("root")?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_file_metadata() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let meta = get_file_metadata(temp_file.path()).await?;
+        assert_eq!(meta.uid, Some(nix::unistd::getuid().as_raw()));
+        assert_eq!(meta.gid, Some(nix::unistd::getgid().as_raw()));
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "600");
+        assert_eq!(meta.is_symlink, false);
+
+        // Symlink
+        let temp_dir = tempfile::tempdir()?;
+        let temp_link = temp_dir.path().join("foo.txt");
+        fs::symlink(temp_file.path(), &temp_link).await?;
+        let meta = get_file_metadata(&temp_link).await?;
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "777");
+        assert_eq!(meta.is_symlink, true);
+        assert_eq!(meta.symlink_source, Some(temp_file.path().to_path_buf()));
+
+        // Test with elevated permissions
+        let temp_file = tempfile::NamedTempFile::new()?;
+        sudo::sudo_exec(
+            "chown",
+            &["root:root", &temp_file.path().to_str().unwrap()],
+            None,
+        )
+        .await?;
+        sudo::sudo_exec("chmod", &["644", &temp_file.path().to_str().unwrap()], None).await?;
+
+        let meta = get_file_metadata(temp_file.path()).await?;
+        assert_eq!(meta.uid, Some(0));
+        assert_eq!(meta.gid, Some(0));
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "644");
+        assert_eq!(meta.is_symlink, false);
+
+        // Symlink
+        let temp_dir = tempfile::tempdir()?;
+        let temp_link = temp_dir.path().join("foo.txt");
+        fs::symlink(temp_file.path(), &temp_link).await?;
+        sudo::sudo_exec("chown", &["root:root", &temp_link.to_str().unwrap()], None).await?;
+        let meta = get_file_metadata(&temp_link).await?;
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "777");
+        assert_eq!(meta.is_symlink, true);
+        assert_eq!(meta.symlink_source, Some(temp_file.path().to_path_buf()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_set_file_metadata() -> Result<()> {
+        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let temp_file = tempfile::NamedTempFile::new()?;
+        set_file_metadata(
+            temp_file.path(),
+            FileMetadata {
+                uid: None,
+                gid: None,
+                permissions: Some(0o777),
+                is_symlink: false,
+                symlink_source: None,
+                checksum: None,
+            },
+        )
+        .await?;
+        let meta = get_file_metadata(temp_file.path()).await?;
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "777");
+
+        set_file_metadata(
+            temp_file.path(),
+            FileMetadata {
+                uid: Some(0),
+                gid: Some(0),
+                permissions: Some(0o644),
+                is_symlink: false,
+                symlink_source: None,
+                checksum: None,
+            },
+        )
+        .await?;
+        let meta = get_file_metadata(temp_file.path()).await?;
+        assert_eq!(meta.uid, Some(0));
+        assert_eq!(meta.gid, Some(0));
+        assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "644");
+
         Ok(())
     }
 }

@@ -823,12 +823,12 @@ impl Store {
             let user_id = metadata
                 .uid
                 .ok_or_else(|| anyhow!("Could not get UID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             let group_id = metadata
                 .gid
                 .ok_or_else(|| anyhow!("Could not get GID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             StoreBackup {
                 path: file_path_str,
@@ -849,22 +849,22 @@ impl Store {
             let user_id = metadata
                 .uid
                 .ok_or_else(|| anyhow!("Could not get UID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             let group_id = metadata
                 .gid
                 .ok_or_else(|| anyhow!("Could not get GID of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             let permissions = metadata
                 .permissions
                 .ok_or_else(|| anyhow!("Could not get permissions of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             let checksum = metadata
                 .checksum
                 .ok_or_else(|| anyhow!("Could not get checksum of {:?}", &file_path_str))
-                .map_err(|e| SQLiteError::Other(e))?;
+                .map_err(SQLiteError::Other)?;
 
             let content = match tokio::fs::read(&file_path).await {
                 Ok(c) => c,
