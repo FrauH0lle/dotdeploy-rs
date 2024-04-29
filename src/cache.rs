@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use deadpool_sqlite::rusqlite::{params, OptionalExtension};
 use deadpool_sqlite::{Config, Runtime};
 use thiserror::Error;
+use tokio::fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::Command;
 
@@ -225,7 +226,6 @@ impl Store {
                         "Store directory '{}' exists already, continuing.",
                         &self.path.display()
                     );
-                    
                 }
                 Err(e) => bail!("{}", e),
             }
@@ -248,7 +248,6 @@ impl Store {
                         "Store directory '{}' exists already, continuing.",
                         &self.path.display()
                     );
-                    
                 }
                 Err(e) => bail!("{}", e),
             }
@@ -866,7 +865,7 @@ impl Store {
                 .ok_or_else(|| anyhow!("Could not get checksum of {:?}", &file_path_str))
                 .map_err(SQLiteError::Other)?;
 
-            let content = match tokio::fs::read(&file_path).await {
+            let content = match fs::read(&file_path).await {
                 Ok(c) => c,
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     let temp_file =
@@ -875,10 +874,12 @@ impl Store {
 
                     sudo::sudo_exec(
                         "cp",
-                        &["--preserve",
+                        &[
+                            "--preserve",
                             "--no-dereference",
                             &common::path_to_string(&file_path)?,
-                            &temp_path_str],
+                            &temp_path_str,
+                        ],
                         Some(
                             format!(
                                 "Create temporary copy of {:?} for backup creation",
@@ -903,7 +904,7 @@ impl Store {
                     )
                     .await?;
 
-                    tokio::fs::read(&temp_file)
+                    fs::read(&temp_file)
                         .await
                         .with_context(|| format!("Failed to read {:?}", &temp_file))?
                 }
@@ -1047,71 +1048,53 @@ impl Store {
         let owner: Vec<&str> = result.owner.split(':').collect();
 
         match result.file_type.as_str() {
-            "link" => match tokio::fs::symlink(result.link_source.as_ref().unwrap(), &to).await {
-                Ok(_) => {
-                    common::set_file_metadata(
-                        file_path,
-                        common::FileMetadata {
-                            uid: Some(
-                                owner[0]
-                                    .parse::<u32>()
-                                    .map_err(|e| SQLiteError::Other(e.into()))?,
-                            ),
-                            gid: Some(
-                                owner[1]
-                                    .parse::<u32>()
-                                    .map_err(|e| SQLiteError::Other(e.into()))?,
-                            ),
-                            permissions: None,
-                            is_symlink: true,
-                            symlink_source: None,
-                            checksum: None,
-                        },
-                    )
-                    .await?;
+            "link" => {
+                match fs::symlink(result.link_source.as_ref().unwrap(), &to).await {
+                    Ok(_) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                        sudo::sudo_exec(
+                            "ln",
+                            &[
+                                "-sf",
+                                result.link_source.as_ref().unwrap(),
+                                to.as_ref().to_str().unwrap(),
+                            ],
+                            None,
+                        )
+                        .await?;
+                    }
+                    Err(e) => Err(e).with_context(|| {
+                        format!("Falied to restore backup of {:?}", &file_path.as_ref())
+                    })?,
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    sudo::sudo_exec(
-                        "ln",
-                        &["-sf",
-                            result.link_source.as_ref().unwrap(),
-                            to.as_ref().to_str().unwrap()],
-                        None,
-                    )
-                    .await?;
-
-                    common::set_file_metadata(
-                        file_path,
-                        common::FileMetadata {
-                            uid: Some(
-                                owner[0]
-                                    .parse::<u32>()
-                                    .map_err(|e| SQLiteError::Other(e.into()))?,
-                            ),
-                            gid: Some(
-                                owner[1]
-                                    .parse::<u32>()
-                                    .map_err(|e| SQLiteError::Other(e.into()))?,
-                            ),
-                            permissions: None,
-                            is_symlink: true,
-                            symlink_source: None,
-                            checksum: None,
-                        },
-                    )
-                    .await?;
-                }
-                Err(e) => Err(e).with_context(|| {
-                    format!("Falied to restore backup of {:?}", &file_path.as_ref())
-                })?,
-            },
+                common::set_file_metadata(
+                    file_path,
+                    common::FileMetadata {
+                        uid: Some(
+                            owner[0]
+                                .parse::<u32>()
+                                .map_err(|e| SQLiteError::Other(e.into()))?,
+                        ),
+                        gid: Some(
+                            owner[1]
+                                .parse::<u32>()
+                                .map_err(|e| SQLiteError::Other(e.into()))?,
+                        ),
+                        permissions: None,
+                        is_symlink: true,
+                        symlink_source: None,
+                        checksum: None,
+                    },
+                )
+                .await?;
+            }
             "regular" => {
                 let mut write_dest = PathBuf::new();
                 let temp_file =
                     tempfile::NamedTempFile::new().map_err(|e| SQLiteError::Other(e.into()))?;
                 let mut move_file = false;
 
-                let file = match tokio::fs::File::create(&to).await {
+                let file = match fs::File::create(&to).await {
                     Ok(f) => {
                         write_dest.push(&to);
                         f
@@ -1119,7 +1102,7 @@ impl Store {
                     Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                         write_dest.push(&temp_file);
                         move_file = true;
-                        tokio::fs::File::create(&temp_file)
+                        fs::File::create(&temp_file)
                             .await
                             .map_err(|e| SQLiteError::Other(e.into()))?
                     }
@@ -1164,9 +1147,11 @@ impl Store {
                 if move_file {
                     sudo::sudo_exec(
                         "cp",
-                        &["--preserve",
+                        &[
+                            "--preserve",
                             &write_dest.to_str().unwrap(),
-                            to.as_ref().to_str().unwrap()],
+                            to.as_ref().to_str().unwrap(),
+                        ],
                         None,
                     )
                     .await?;
@@ -1214,18 +1199,17 @@ pub(crate) async fn init_user_store(path: Option<PathBuf>) -> Result<Store, SQLi
 
     // Connect to database
     let mut store = Store::new(store_path.clone(), false);
-    let user_store = store.init().await;
-    match user_store {
-        Ok(()) => Ok(store),
-        Err(e) => {
-            Err(anyhow!(
-                "Failed to initialize user store in `{:?}`:\n {:?}",
-                &store_path,
-                e
+    store
+        .init()
+        .await
+        .map_err(|e| e.into_anyhow())
+        .with_context(|| {
+            format!(
+                "Failed to initialize user store in {}",
+                &store_path.display()
             )
-            .into())
-        }
-    }
+        })?;
+    Ok(store)
 }
 
 /// Initialize system store.
@@ -1240,22 +1224,16 @@ pub(crate) async fn init_system_store() -> Result<Store, SQLiteError> {
 
     // Connect to database
     let mut store = Store::new(store_path.clone(), true);
-    let sys_store = store.init().await;
-    match sys_store {
-        Ok(()) => {
-            tokio::fs::set_permissions(&store.path, std::fs::Permissions::from_mode(0o666))
-                .await
-                .map_err(|e| SQLiteError::Other(e.into()))?;
-            Ok(store)
-        }
-        Err(e) => {
-            Err(anyhow!(
-                "Failed to initialize system store in `/var/lib/dotdeploy`:\n {:?}",
-                e
-            )
-            .into())
-        }
-    }
+    store
+        .init()
+        .await
+        .map_err(|e| e.into_anyhow())
+        .context("Failed to initialize system store in /var/lib/dotdeploy")?;
+
+    fs::set_permissions(&store.path, std::fs::Permissions::from_mode(0o666))
+        .await
+        .map_err(|e| SQLiteError::Other(e.into()))?;
+    Ok(store)
 }
 
 //
@@ -1500,8 +1478,8 @@ mod tests {
 
         let temp_path = tempdir()?;
 
-        tokio::fs::write(temp_path.path().join("foo.txt"), b"Hello World!").await?;
-        tokio::fs::set_permissions(
+        fs::write(temp_path.path().join("foo.txt"), b"Hello World!").await?;
+        fs::set_permissions(
             temp_path.path().join("foo.txt"),
             std::fs::Permissions::from_mode(0o666),
         )
@@ -1512,7 +1490,7 @@ mod tests {
             .add_backup(&temp_path.path().join("foo.txt"))
             .await
             .map_err(|e| e.into_anyhow())?;
-        tokio::fs::remove_file(temp_path.path().join("foo.txt")).await?;
+        fs::remove_file(temp_path.path().join("foo.txt")).await?;
         assert!(!temp_path.path().join("foo.txt").exists());
 
         // Restore file
@@ -1537,47 +1515,4 @@ mod tests {
 
         Ok(())
     }
-
-    // #[tokio::test]
-    // async fn test_insert_performance() -> Result<()> {
-    //     let temp_dir = tempdir()?;
-    //     env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
-
-    //     // Initialize the user store, which sets up the database and tables
-    //     let pool = init_user_store().await?;
-
-    //     // Start a transaction
-    //     let mut transaction = pool.begin().await?;
-
-    //     // Assuming you have a module with id = 1 for the foreign key constraint
-    //     // If not, insert a module record first
-    //     sqlx::query("INSERT INTO modules (name) VALUES (?1)")
-    //             .bind("test")
-    //             .execute(&pool)
-    //             .await?;
-
-    //     let module_id = 1; // Make sure this module ID exists or insert it before this step
-
-    //     for i in 0..100_000 {
-    //         let source = format!("/dotfiles/foo{}.txt", i);
-    //         let destination = format!("/home/foo{}.txt", i);
-    //         let operation = "link";
-    //         let checksum = format!("checksum{}", i);
-
-    //         sqlx::query("INSERT INTO files (module_id, source, destination, operation, checksum) VALUES (?, ?, ?, ?, ?)")
-    //             .bind(module_id)
-    //             .bind(&source)
-    //             .bind(&destination)
-    //             .bind(operation)
-    //             .bind(&checksum)
-    //             // .execute(&pool)
-    //             .execute(&mut *transaction)
-    //             .await?;
-    //     }
-
-    //     // Commit the transaction
-    //     transaction.commit().await?;
-
-    //     Ok(())
-    // }
 }

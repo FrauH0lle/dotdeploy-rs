@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(meta.uid, Some(nix::unistd::getuid().as_raw()));
         assert_eq!(meta.gid, Some(nix::unistd::getgid().as_raw()));
         assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "600");
-        assert_eq!(meta.is_symlink, false);
+        assert!(!meta.is_symlink);
 
         // Symlink
         let temp_dir = tempfile::tempdir()?;
@@ -590,7 +590,7 @@ mod tests {
         fs::symlink(temp_file.path(), &temp_link).await?;
         let meta = get_file_metadata(&temp_link).await?;
         assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "777");
-        assert_eq!(meta.is_symlink, true);
+        assert!(meta.is_symlink);
         assert_eq!(meta.symlink_source, Some(temp_file.path().to_path_buf()));
 
         // Test with elevated permissions
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(meta.uid, Some(0));
         assert_eq!(meta.gid, Some(0));
         assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "644");
-        assert_eq!(meta.is_symlink, false);
+        assert!(!meta.is_symlink);
 
         // Symlink
         let temp_dir = tempfile::tempdir()?;
@@ -616,7 +616,7 @@ mod tests {
         sudo::sudo_exec("chown", &["root:root", &temp_link.to_str().unwrap()], None).await?;
         let meta = get_file_metadata(&temp_link).await?;
         assert_eq!(perms_int_to_str(meta.permissions.unwrap())?, "777");
-        assert_eq!(meta.is_symlink, true);
+        assert!(meta.is_symlink);
         assert_eq!(meta.symlink_source, Some(temp_file.path().to_path_buf()));
 
         Ok(())
