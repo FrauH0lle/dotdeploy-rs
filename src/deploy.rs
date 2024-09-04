@@ -39,7 +39,9 @@ pub(crate) async fn deploy(
                     let stores_clone = Arc::clone(&stores); // Clone the Arc
                     let hb_clone = Arc::clone(&hb);
                     let context_clone = Arc::clone(&context);
-                    set.spawn(async move { file.perform(&stores_clone, &context_clone, &hb_clone).await });
+                    set.spawn(async move {
+                        file.perform(&stores_clone, &context_clone, &hb_clone).await
+                    });
                 }
 
                 while let Some(res) = set.join_next().await {
@@ -48,32 +50,35 @@ pub(crate) async fn deploy(
             }
 
             if let Some(packages) = phase.packages {
-                // Get default commands
-                let default_cmds = crate::packages::default_cmds()?.0;
-                let mut install_cmd: VecDeque<String> = VecDeque::new();
-                if let Some(cmd) = &dotdeploy_config.intall_pkg_cmd {
-                    install_cmd = cmd.clone();
-                } else if let Some(cmd) = default_cmds.get(&dotdeploy_config.distribution) {
-                    install_cmd = cmd.clone()
+                if dotdeploy_config.skip_pkg_install {
+                    warn!("Skipping package installation as requested")
                 } else {
-                    bail!("Failed to get package install command")
-                }
-                if let Some(cmd) = install_cmd.pop_front() {
-                    // Add packages
-                    for pkg in packages.into_iter() {
-                        install_cmd.push_back(pkg);
-                    }
-                    let mut cmd = tokio::process::Command::new(&cmd)
-                        .args(&install_cmd)
-                        .spawn()
-                        .with_context(|| {
-                            format!("Failed to spawn {:?} with args: {:?}", cmd, install_cmd)
-                        })?;
-
-                    if cmd.wait().await?.success() {
-                        
+                    // Get default commands
+                    let default_cmds = crate::packages::default_cmds()?.0;
+                    let mut install_cmd: VecDeque<String> = VecDeque::new();
+                    if let Some(cmd) = &dotdeploy_config.intall_pkg_cmd {
+                        install_cmd = cmd.clone();
+                    } else if let Some(cmd) = default_cmds.get(&dotdeploy_config.distribution) {
+                        install_cmd = cmd.clone()
                     } else {
-                        bail!("Failed to execute {:?} with args: {:?}", cmd, install_cmd)
+                        bail!("Failed to get package install command")
+                    }
+                    if let Some(cmd) = install_cmd.pop_front() {
+                        // Add packages
+                        for pkg in packages.into_iter() {
+                            install_cmd.push_back(pkg);
+                        }
+                        let mut cmd = tokio::process::Command::new(&cmd)
+                            .args(&install_cmd)
+                            .spawn()
+                            .with_context(|| {
+                                format!("Failed to spawn {:?} with args: {:?}", cmd, install_cmd)
+                            })?;
+
+                        if cmd.wait().await?.success() {
+                        } else {
+                            bail!("Failed to execute {:?} with args: {:?}", cmd, install_cmd)
+                        }
                     }
                 }
             }

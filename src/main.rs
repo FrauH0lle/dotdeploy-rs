@@ -79,8 +79,11 @@ async fn run() -> Result<bool> {
 
     // The Dotdeploy config should be on the top level as it contains information like the paths
     // which are needed often.
-    let dotdeploy_config =
+    let mut dotdeploy_config =
         config::ConfigFile::init().context("Failed to initialize Dotdeploy config")?;
+    if cli.skip_pkg_install {
+        dotdeploy_config.skip_pkg_install = cli.skip_pkg_install;
+    }
 
     // Set global variables according to config
     DEPLOY_SYSTEM_FILES.store(dotdeploy_config.deploy_sys_files, Ordering::Relaxed);

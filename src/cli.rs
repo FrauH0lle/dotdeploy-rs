@@ -7,7 +7,10 @@ pub(crate) struct Cli {
     pub(crate) command: Commands,
     /// Verbosity level - specify up to 2 times to get more detailed output.
     #[clap(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
-    pub verbosity: u8,
+    pub(crate) verbosity: u8,
+    /// Skip package installation during deployment
+    #[clap(long, short, action)]
+    pub(crate) skip_pkg_install: bool,
 }
 
 #[derive(Subcommand)]

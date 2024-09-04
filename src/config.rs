@@ -52,6 +52,9 @@ pub(crate) struct ConfigFile {
     pub(crate) intall_pkg_cmd: Option<VecDeque<String>>,
     /// Command used to remove packages.
     pub(crate) remove_pkg_cmd: Option<VecDeque<String>>,
+    /// Skip package installation during deployment
+    pub(crate) skip_pkg_install: bool,
+
 }
 
 impl ConfigFile {
@@ -160,6 +163,7 @@ impl ConfigFile {
             deploy_sys_files: Option<bool>,
             intall_pkg_cmd: Option<VecDeque<String>>,
             remove_pkg_cmd: Option<VecDeque<String>>,
+            skip_pkg_install: Option<bool>,
         }
 
         let parsed_data: ParsedFile = toml::from_str(&conf_string)?;
@@ -221,6 +225,7 @@ impl ConfigFile {
             use_sudo: parsed_data.use_sudo.unwrap_or(true),
             deploy_sys_files: parsed_data.deploy_sys_files.unwrap_or(true),
             intall_pkg_cmd: parsed_data.intall_pkg_cmd,
+            skip_pkg_install: parsed_data.skip_pkg_install.unwrap_or(false),
             remove_pkg_cmd: parsed_data.remove_pkg_cmd
         })
     }
