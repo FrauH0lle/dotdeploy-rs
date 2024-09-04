@@ -135,6 +135,7 @@ mod tests {
             hostname: "None".to_string(),
             use_sudo: true,
             deploy_sys_files: true,
+            skip_pkg_install: false,
             intall_pkg_cmd: None,
             remove_pkg_cmd: None,
         };
