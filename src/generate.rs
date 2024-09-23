@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::fs;
 
-use crate::common;
+use crate::utils::file_fs;
 use crate::read_module;
 
 async fn generate_file<P: AsRef<Path>>(
@@ -69,7 +69,7 @@ async fn generate_file<P: AsRef<Path>>(
                 module: "__dotdeploy_generated".to_string(),
                 source: None,
                 source_checksum: None,
-                destination: common::path_to_string(target)?,
+                destination: file_fs::path_to_string(target)?,
                 destination_checksum: None,
                 operation: "generate".to_string(),
                 user: Some(std::env::var("USER")?),
@@ -99,7 +99,7 @@ pub(crate) async fn generate_files(
         .map_err(|e| e.into_anyhow())?;
     if !prev_files.is_empty() {
         for f in prev_files.into_iter() {
-            common::delete_file(f.destination).await?;
+            file_fs::delete_file(f.destination).await?;
         }
     }
     stores

@@ -634,7 +634,7 @@ impl ActionConfig {
             RunExec::File(file) => {
                 let args = self.args.as_deref().unwrap_or(&[]);
                 if self.sudo {
-                    crate::sudo::spawn_sudo_maybe(format!(
+                    crate::utils::sudo::spawn_sudo_maybe(format!(
                         "Running {:?} with args: {:?}",
                         file, args
                     ))

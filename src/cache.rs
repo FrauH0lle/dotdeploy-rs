@@ -10,8 +10,9 @@ use tokio::fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::Command;
 
-use crate::common;
-use crate::sudo;
+use crate::utils::file_fs;
+use crate::utils::file_metadata;
+use crate::utils::sudo;
 
 // System cache /var/lib/dotdeploy
 // User cache in $HOME
@@ -202,7 +203,7 @@ impl Store {
 
                     sudo::sudo_exec(
                         "mkdir",
-                        &["-p", common::path_to_string(&self.path)?.as_str()],
+                        &["-p", file_fs::path_to_string(&self.path)?.as_str()],
                         Some("Create directory for system store DB"),
                     )
                     .await
@@ -213,7 +214,7 @@ impl Store {
                     // access it.
                     sudo::sudo_exec(
                         "chmod",
-                        &["777", common::path_to_string(&self.path)?.as_str()],
+                        &["777", file_fs::path_to_string(&self.path)?.as_str()],
                         Some("Adjusting permissions of system store DB directory"),
                     )
                     .await
@@ -499,7 +500,7 @@ impl Store {
         filename: P,
     ) -> Result<StoreFile, SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
-        let filename_str = common::path_to_string(filename)?;
+        let filename_str = file_fs::path_to_string(filename)?;
 
         let conn = &self.get_con().await?;
 
@@ -635,7 +636,7 @@ impl Store {
         &self,
         path: P,
     ) -> Result<bool, SQLiteError> {
-        let path_str = common::path_to_string(path)?;
+        let path_str = file_fs::path_to_string(path)?;
         let store_path = self.path.clone();
 
         debug!("Looking for {} in {}", &path_str, &self.path.display());
@@ -718,7 +719,7 @@ impl Store {
         filename: P,
     ) -> Result<Option<(String, String)>, SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
-        let filename_str = common::path_to_string(filename)?;
+        let filename_str = file_fs::path_to_string(filename)?;
         self.get_file_checksum(filename_str, "source").await
     }
 
@@ -728,7 +729,7 @@ impl Store {
         filename: P,
     ) -> Result<Option<(String, String)>, SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
-        let filename_str = common::path_to_string(filename)?;
+        let filename_str = file_fs::path_to_string(filename)?;
         self.get_file_checksum(filename_str, "destination").await
     }
 
@@ -803,17 +804,17 @@ impl Store {
     /// Add the backup of a file to the store database.
     pub(crate) async fn add_backup<P: AsRef<Path>>(&self, file_path: P) -> Result<(), SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
-        let file_path_str = common::path_to_string(&file_path)?;
+        let file_path_str = file_fs::path_to_string(&file_path)?;
 
         // Collect metadata
         // We should always be able to read metadata but not if the file is in a directory which
         // denies access. Then, we need to copy the file first to an accessible location.
         let mut sql_stmt = String::new();
 
-        let metadata = common::get_file_metadata(&file_path).await?;
+        let metadata = file_metadata::get_file_metadata(&file_path).await?;
 
         let b_file: StoreBackup = if metadata.is_symlink {
-            let link_source = common::path_to_string(metadata.symlink_source.unwrap())?;
+            let link_source = file_fs::path_to_string(metadata.symlink_source.unwrap())?;
 
             sql_stmt.push_str(
                 "INSERT INTO backups (path, file_type, content, link_source, owner, permissions, checksum, date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -870,14 +871,14 @@ impl Store {
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     let temp_file =
                         tempfile::NamedTempFile::new().map_err(|e| SQLiteError::Other(e.into()))?;
-                    let temp_path_str = common::path_to_string(&temp_file)?;
+                    let temp_path_str = file_fs::path_to_string(&temp_file)?;
 
                     sudo::sudo_exec(
                         "cp",
                         &[
                             "--preserve",
                             "--no-dereference",
-                            &common::path_to_string(&file_path)?,
+                            &file_fs::path_to_string(&file_path)?,
                             &temp_path_str,
                         ],
                         Some(
@@ -891,9 +892,9 @@ impl Store {
                     .await?;
 
                     // Ensure that we can read the file which we want to backup
-                    common::set_file_metadata(
+                    file_metadata::set_file_metadata(
                         &temp_file,
-                        common::FileMetadata {
+                        file_metadata::FileMetadata {
                             uid: None,
                             gid: None,
                             permissions: Some(0o777),
@@ -953,7 +954,7 @@ impl Store {
         &self,
         file_path: P,
     ) -> Result<(), SQLiteError> {
-        let file_path_str = common::path_to_string(&file_path)?;
+        let file_path_str = file_fs::path_to_string(&file_path)?;
 
         let conn = &self.get_con().await?;
         conn.interact(move |conn| -> Result<(), SQLiteError> {
@@ -974,7 +975,7 @@ impl Store {
         &self,
         path: P,
     ) -> Result<bool, SQLiteError> {
-        let path_str = common::path_to_string(path)?;
+        let path_str = file_fs::path_to_string(path)?;
         let store_path = self.path.clone();
 
         debug!(
@@ -1019,7 +1020,7 @@ impl Store {
         to: P,
     ) -> Result<(), SQLiteError> {
         // Safely handle the possibility that the path cannot be converted to a &str
-        let file_path_str = common::path_to_string(&file_path)?;
+        let file_path_str = file_fs::path_to_string(&file_path)?;
 
         let conn = &self.get_con().await?;
 
@@ -1067,9 +1068,9 @@ impl Store {
                         format!("Falied to restore backup of {:?}", &file_path.as_ref())
                     })?,
                 }
-                common::set_file_metadata(
+                file_metadata::set_file_metadata(
                     file_path,
-                    common::FileMetadata {
+                    file_metadata::FileMetadata {
                         uid: Some(
                             owner[0]
                                 .parse::<u32>()
@@ -1123,9 +1124,9 @@ impl Store {
                         .context("Failed to flush write buffer")?;
                 }
 
-                common::set_file_metadata(
+                file_metadata::set_file_metadata(
                     &write_dest,
-                    common::FileMetadata {
+                    file_metadata::FileMetadata {
                         uid: Some(
                             owner[0]
                                 .parse::<u32>()

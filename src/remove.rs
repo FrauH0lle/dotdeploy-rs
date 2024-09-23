@@ -2,15 +2,15 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use crate::common;
+use crate::utils::file_fs;
 
 async fn remove_file<S: AsRef<str>>(
     file: S,
     stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
 ) -> Result<()> {
-    if common::check_file_exists(file.as_ref()).await? {
+    if file_fs::check_file_exists(file.as_ref()).await? {
         // Delete file
-        common::delete_file(file.as_ref()).await?;
+        file_fs::delete_file(file.as_ref()).await?;
         debug!("Removed {:?}", file.as_ref());
 
         // Check if we have a backup in the user store
@@ -64,7 +64,7 @@ async fn remove_file<S: AsRef<str>>(
 }
 
 pub(crate) async fn remove(
-    mut phases: BTreeMap<String, crate::phases::Phase>,
+    mut phases: BTreeMap<String, crate::phases_old::Phase>,
     stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
     files: Vec<crate::cache::StoreFile>,
     dotdeploy_config: &crate::config::ConfigFile,
@@ -141,7 +141,7 @@ pub(crate) async fn remove(
         // But remove the parent directories sync!
         for file in files {
             // Remove directory and parents if empty
-            common::delete_parents(&file.destination, false).await?;
+            file_fs::delete_parents(&file.destination, false).await?;
         }
 
         if let Some(v) = main_actions {

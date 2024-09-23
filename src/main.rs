@@ -11,7 +11,6 @@ extern crate log;
 
 mod cache;
 mod cli;
-mod common;
 mod config;
 mod deploy;
 mod generate;
@@ -20,7 +19,7 @@ mod packages;
 mod phases;
 mod read_module;
 mod remove;
-mod sudo;
+mod utils;
 
 lazy_static! {
     /// Global variable, available to all threads, indicating if the system store can be used.
@@ -106,15 +105,15 @@ async fn run() -> Result<bool> {
 
     context.insert(
         "DOD_ROOT".to_string(),
-        common::path_to_string(&dotdeploy_config.config_root)?,
+        utils::file_fs::path_to_string(&dotdeploy_config.config_root)?,
     );
     context.insert(
         "DOD_MODULES_ROOT".to_string(),
-        common::path_to_string(&dotdeploy_config.modules_root)?,
+        utils::file_fs::path_to_string(&dotdeploy_config.modules_root)?,
     );
     context.insert(
         "DOD_HOSTS_ROOT".to_string(),
-        common::path_to_string(&dotdeploy_config.hosts_root)?,
+        utils::file_fs::path_to_string(&dotdeploy_config.hosts_root)?,
     );
     context.insert(
         "DOD_HOSTNAME".to_string(),
@@ -175,7 +174,7 @@ async fn run() -> Result<bool> {
                 for module in modules.iter() {
                     let m = crate::cache::StoreModule {
                         name: module.name.clone(),
-                        location: common::path_to_string(&module.location)?,
+                        location: utils::file_fs::path_to_string(&module.location)?,
                         user: Some(std::env::var("USER")?),
                         reason: module.reason.clone(),
                         depends: module.config.depends.clone().map(|deps| deps.join(", ")),

@@ -1,33 +1,45 @@
+//! Sudo operations module.
+//!
+//! This module provides functionality for executing commands with elevated privileges using sudo.
+//! It includes mechanisms to maintain an active sudo session, execute commands with sudo, and
+//! handle the output of sudo operations.
+//!
+//! The module is adapted from: https://github.com/Morganamilo/paru/blob/5355012aa3529014145b8940dd0c62b21e53095a/src/exec.rs#L144
+
 use std::ffi::OsStr;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use lazy_static::lazy_static;
 
-// Adapted from https://github.com/Morganamilo/paru/blob/5355012aa3529014145b8940dd0c62b21e53095a/src/exec.rs#L144
-
 lazy_static! {
     /// Global variable, available to all threads, indicating if sudo is running.
     static ref SUDO_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
-    // static ref SUDO_MUTEX: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+    /// Mutex for synchronizing access to the sudo session.
     static ref SUDO_MUTEX: Mutex<()> = Mutex::new(());
 }
 
 /// Conditionally spawns a new thread to maintain an active `sudo` session by periodically
 /// refreshing it.
 ///
-/// If a `sudo` refresh loop is not already running (as indicated by [SUDO_LOOP_RUNNING]),
-/// this function starts the loop. This ensures that subsequent operations requiring `sudo`
-/// privileges can proceed without user interaction for entering passwords.
+/// If a `sudo` refresh loop is not already running (as indicated by [SUDO_LOOP_RUNNING]), this
+/// function starts the loop. This ensures that subsequent operations requiring `sudo` privileges
+/// can proceed without user interaction for entering passwords.
+///
+/// # Arguments
+///
+/// * `reason` - A string slice explaining the reason for requesting sudo privileges.
 ///
 /// # Returns
 ///
-/// * Returns `Ok(())` if the function successfully starts a `sudo` refresh loop or if one is
-/// already running. Returns an `Err` if starting the `sudo` command fails at any point.
+/// * `Ok(())` if the function successfully starts a `sudo` refresh loop or if one is
+///   already running.
+/// * `Err` if starting the `sudo` command fails or if sudo use is disabled.
 pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
     if crate::USE_SUDO.load(Ordering::Relaxed) {
         debug!("Requesting ROOT privileges. Reason: {}", reason.as_ref());
@@ -37,6 +49,17 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
             // Double-check the flag to handle race conditions
             is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
             if !is_running {
+                // Flush any pending output
+                io::stdout().flush().await.unwrap();
+
+                // Print a visually distinct sudo prompt
+                println!("\n\x1b[1;31m==== SUDO PASSWORD REQUIRED ====\x1b[0m");
+                println!("Reason: {}", reason.as_ref());
+                println!("\x1b[1;31m==================================\x1b[0m");
+
+                // Flush again to ensure the prompt is displayed
+                io::stdout().flush().await.unwrap();
+
                 let sudo_cmd = "sudo";
                 let flags = vec!["-v"];
                 std::thread::spawn(move || sudo_loop(sudo_cmd, &flags));
@@ -54,20 +77,21 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
     }
 }
 
-/// Runs an infinite loop that periodically executes the `sudo` command with the specified flags to
-/// keep the sudo session active. This loop runs in its own thread and sleeps for a specified
-/// duration between `sudo` invocations.
+/// Runs an infinite loop that periodically executes the `sudo` command to keep the sudo session
+/// active.
+///
+/// This function is intended to be run in its own thread. It sleeps for a specified duration
+/// between `sudo` invocations to avoid unnecessary system load.
 ///
 /// # Arguments
 ///
-/// * `sudo` - A string slice (`&str`) specifying the `sudo` command to execute.
-/// * `flags` - A slice of elements that implement `AsRef<OsStr>`, representing additional flags or
-/// arguments for the `sudo` command.
+/// * `sudo` - The sudo command to execute.
+/// * `flags` - Additional flags or arguments for the sudo command.
 ///
 /// # Returns
 ///
-/// *Returns `Ok(())` if the loop runs indefinitely without error. Returns an `Err` if executing the
-/// `sudo` command fails.
+/// * `Ok(())` if the loop runs indefinitely without error.
+/// * `Err` if executing the sudo command fails.
 fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     loop {
         update_sudo(sudo, flags)?;
@@ -75,20 +99,20 @@ fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     }
 }
 
-/// Executes the `sudo` command with the specified flags once, inheriting the terminal's `stdin` to
-/// allow for password input if necessary. This function is typically used to refresh the active
-/// `sudo` session or check that `sudo` privileges can be obtained.
+/// Executes the `sudo` command with the specified flags once.
+///
+/// This function is typically used to refresh the active sudo session or check that sudo privileges
+/// can be obtained.
 ///
 /// # Arguments
 ///
-/// * `sudo` - A string slice (`&str`) specifying the `sudo` command to execute.
-/// * `flags` - A slice of elements that implement `AsRef<OsStr>`, representing the flags or
-/// arguments to be passed to the `sudo` command.
+/// * `sudo` - The sudo command to execute.
+/// * `flags` - Additional flags or arguments for the sudo command.
 ///
 /// # Returns
 ///
-/// * Returns `Ok(())` if the `sudo` command executes successfully. Returns an `Err` if the command
-/// fails to execute or completes with a non-success status.
+/// * `Ok(())` if the sudo command executes successfully.
+/// * `Err` if the command fails to execute or completes with a non-success status.
 fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     let status = Command::new(sudo)
         .args(flags)
@@ -101,7 +125,15 @@ fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     Ok(())
 }
 
-/// Format arguments given into a single string for printing
+/// Formats the given arguments into a single string for printing.
+///
+/// # Arguments
+///
+/// * `args` - A slice of arguments to format.
+///
+/// # Returns
+///
+/// A string containing all arguments joined with spaces.
 fn format_args<S: AsRef<OsStr>>(args: &[S]) -> String {
     args.iter()
         .map(|s| s.as_ref().to_string_lossy().into_owned())
@@ -109,7 +141,18 @@ fn format_args<S: AsRef<OsStr>>(args: &[S]) -> String {
         .join(" ")
 }
 
-/// Execute a command with sudo priviliges
+/// Executes a command with sudo privileges.
+///
+/// # Arguments
+///
+/// * `cmd` - The command to execute.
+/// * `args` - Arguments for the command.
+/// * `reason` - Optional reason for sudo execution, used for logging.
+///
+/// # Returns
+///
+/// * `Ok(())` if the command executes successfully.
+/// * `Err` if the command fails to execute or returns a non-zero exit status.
 pub(crate) async fn sudo_exec<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
@@ -137,7 +180,18 @@ pub(crate) async fn sudo_exec<S: AsRef<OsStr>>(
     }
 }
 
-/// Execute a command with sudo priviliges and return stdout
+/// Executes a command with sudo privileges and returns its output.
+///
+/// # Arguments
+///
+/// * `cmd` - The command to execute.
+/// * `args` - Arguments for the command.
+/// * `reason` - Optional reason for sudo execution, used for logging.
+///
+/// # Returns
+///
+/// * `Ok(Output)` containing the command's output if it executes successfully.
+/// * `Err` if the command fails to execute.
 pub(crate) async fn sudo_exec_output<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
@@ -162,7 +216,18 @@ pub(crate) async fn sudo_exec_output<S: AsRef<OsStr>>(
     Ok(output)
 }
 
-/// Execute a command with sudo priviliges and return true if exited succesfully.
+/// Executes a command with sudo privileges and returns whether it exited successfully.
+///
+/// # Arguments
+///
+/// * `cmd` - The command to execute.
+/// * `args` - Arguments for the command.
+/// * `reason` - Optional reason for sudo execution, used for logging.
+///
+/// # Returns
+///
+/// * `Ok(bool)` indicating whether the command executed successfully.
+/// * `Err` if the command fails to execute.
 pub(crate) async fn sudo_exec_success<S: AsRef<OsStr>>(
     cmd: &str,
     args: &[S],
