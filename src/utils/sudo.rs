@@ -9,9 +9,9 @@
 use std::ffi::OsStr;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
@@ -21,7 +21,49 @@ lazy_static! {
     /// Global variable, available to all threads, indicating if sudo is running.
     static ref SUDO_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
     /// Mutex for synchronizing access to the sudo session.
-    static ref SUDO_MUTEX: Mutex<()> = Mutex::new(());
+    static ref SUDO_MUTEX: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+}
+
+// NOTE 2024-09-24: If we ever want to support more than sudo, here would be the spot to implement
+//   it.
+
+#[derive(Debug, Clone)]
+enum GetRootCmd {
+    Sudo {
+        cmd: String,
+        initial_flags: Vec<String>,
+        keepalive_flags: Vec<String>,
+    },
+}
+
+impl GetRootCmd {
+    fn use_sudo() -> Self {
+        GetRootCmd::Sudo {
+            cmd: "sudo".to_string(),
+            initial_flags: vec!["-v".to_string()],
+            keepalive_flags: vec!["-v".to_string(), "-n".to_string()],
+        }
+    }
+
+    fn cmd(&self) -> &str {
+        match self {
+            GetRootCmd::Sudo { cmd, .. } => cmd,
+        }
+    }
+
+    fn initial_flags(&self) -> &[String] {
+        match self {
+            GetRootCmd::Sudo { initial_flags, .. } => initial_flags,
+        }
+    }
+
+    fn keepalive_flags(&self) -> &[String] {
+        match self {
+            GetRootCmd::Sudo {
+                keepalive_flags, ..
+            } => keepalive_flags,
+        }
+    }
 }
 
 /// Conditionally spawns a new thread to maintain an active `sudo` session by periodically
@@ -49,20 +91,20 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
             // Double-check the flag to handle race conditions
             is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
             if !is_running {
-                // Flush any pending output
-                io::stdout().flush().await.unwrap();
+                // Yield to allow any pending output to complete
+                tokio::task::yield_now().await;
 
-                // Print a visually distinct sudo prompt
-                println!("\n\x1b[1;31m==== SUDO PASSWORD REQUIRED ====\x1b[0m");
-                println!("Reason: {}", reason.as_ref());
-                println!("\x1b[1;31m==================================\x1b[0m");
+                // NOTE 2024-09-24: For the time being, we only support sudo and hardcode it here.
+                let sudo_cmd = GetRootCmd::use_sudo();
 
-                // Flush again to ensure the prompt is displayed
-                io::stdout().flush().await.unwrap();
+                // HACK 2024-09-24: I don't know so far how to fix the issue that the password
+                //   prompt gets interleaved into the programm output. This is a stupid hack but
+                //   works most of the time.
+                //
+                // FIXME 2024-09-24: There should be a cleaner and better solution to this.
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-                let sudo_cmd = "sudo";
-                let flags = vec!["-v"];
-                std::thread::spawn(move || sudo_loop(sudo_cmd, &flags));
+                std::thread::spawn(move || sudo_loop(sudo_cmd));
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
             }
         } else {
@@ -85,17 +127,27 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 ///
 /// # Arguments
 ///
-/// * `sudo` - The sudo command to execute.
-/// * `flags` - Additional flags or arguments for the sudo command.
+/// * `sudo` - The sudo command variant to execute.
 ///
 /// # Returns
 ///
 /// * `Ok(())` if the loop runs indefinitely without error.
 /// * `Err` if executing the sudo command fails.
-fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
+fn sudo_loop(sudo: GetRootCmd) -> Result<()> {
+    debug!("Executing privilege escalation command");
+    let status = Command::new(&sudo.cmd())
+        .args(sudo.initial_flags())
+        .status()
+        .with_context(|| "Failed to execute sudo command")?;
+
+    if !status.success() {
+        bail!("Sudo command failed");
+    }
+
+    debug!("Running sudo loop");
     loop {
-        update_sudo(sudo, flags)?;
-        thread::sleep(Duration::from_secs(250));
+        update_sudo(sudo.clone())?;
+        thread::sleep(Duration::from_secs(60));
     }
 }
 
@@ -106,16 +158,16 @@ fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
 ///
 /// # Arguments
 ///
-/// * `sudo` - The sudo command to execute.
-/// * `flags` - Additional flags or arguments for the sudo command.
+/// * `sudo` - The sudo command variant to execute.
 ///
 /// # Returns
 ///
 /// * `Ok(())` if the sudo command executes successfully.
 /// * `Err` if the command fails to execute or completes with a non-success status.
-fn update_sudo<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
-    let status = Command::new(sudo)
-        .args(flags)
+fn update_sudo(sudo: GetRootCmd) -> Result<()> {
+    debug!("Updating privilege escalation");
+    let status = Command::new(&sudo.cmd())
+        .args(sudo.keepalive_flags())
         .status()
         .with_context(|| "Failed to execute sudo command")?;
 
