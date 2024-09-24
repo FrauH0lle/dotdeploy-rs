@@ -104,7 +104,7 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
                 // FIXME 2024-09-24: There should be a cleaner and better solution to this.
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-                std::thread::spawn(move || sudo_loop(sudo_cmd));
+                std::thread::spawn(move || sudo_loop(&sudo_cmd));
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
             }
         } else {
@@ -133,9 +133,9 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 ///
 /// * `Ok(())` if the loop runs indefinitely without error.
 /// * `Err` if executing the sudo command fails.
-fn sudo_loop(sudo: GetRootCmd) -> Result<()> {
+fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
     debug!("Executing privilege escalation command");
-    let status = Command::new(&sudo.cmd())
+    let status = Command::new(sudo.cmd())
         .args(sudo.initial_flags())
         .status()
         .with_context(|| "Failed to execute sudo command")?;
@@ -146,7 +146,7 @@ fn sudo_loop(sudo: GetRootCmd) -> Result<()> {
 
     debug!("Running sudo loop");
     loop {
-        update_sudo(sudo.clone())?;
+        update_sudo(sudo)?;
         thread::sleep(Duration::from_secs(60));
     }
 }
@@ -164,9 +164,9 @@ fn sudo_loop(sudo: GetRootCmd) -> Result<()> {
 ///
 /// * `Ok(())` if the sudo command executes successfully.
 /// * `Err` if the command fails to execute or completes with a non-success status.
-fn update_sudo(sudo: GetRootCmd) -> Result<()> {
+fn update_sudo(sudo: &GetRootCmd) -> Result<()> {
     debug!("Updating privilege escalation");
-    let status = Command::new(&sudo.cmd())
+    let status = Command::new(sudo.cmd())
         .args(sudo.keepalive_flags())
         .status()
         .with_context(|| "Failed to execute sudo command")?;
