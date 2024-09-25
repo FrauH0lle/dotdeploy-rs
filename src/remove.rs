@@ -6,7 +6,7 @@ use crate::utils::file_fs;
 
 async fn remove_file<S: AsRef<str>>(
     file: S,
-    stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
+    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
 ) -> Result<()> {
     if file_fs::check_file_exists(file.as_ref()).await? {
         // Delete file
@@ -64,9 +64,9 @@ async fn remove_file<S: AsRef<str>>(
 }
 
 pub(crate) async fn remove(
-    mut phases: BTreeMap<String, crate::phases_old::Phase>,
-    stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
-    files: Vec<crate::cache::StoreFile>,
+    mut phases: BTreeMap<String, crate::phases::Phase>,
+    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
+    files: Vec<crate::store::files::StoreFile>,
     dotdeploy_config: &crate::config::ConfigFile,
 ) -> Result<()> {
     let phase_name = "remove";

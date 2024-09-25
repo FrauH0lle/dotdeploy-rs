@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 pub(crate) async fn deploy(
     mut phases: BTreeMap<String, crate::phases::Phase>,
-    stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
+    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
     context: serde_json::Value,
     hb: Arc<handlebars::Handlebars<'static>>,
     dotdeploy_config: &crate::config::ConfigFile,

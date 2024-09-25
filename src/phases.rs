@@ -4,8 +4,11 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use crate::common;
-use crate::sudo;
+use crate::utils::file_fs;
+use crate::utils::file_checksum;
+use crate::utils::file_metadata;
+use crate::utils::file_permissions;
+use crate::utils::sudo;
 
 // Structs
 
@@ -100,8 +103,8 @@ impl Destination {
                 tokio::fs::create_dir_all(parent).await?;
 
                 // Remove file if already present
-                if common::check_file_exists(dest).await? {
-                    common::delete_file(dest).await?
+                if file_fs::check_file_exists(dest).await? {
+                    file_fs::delete_file(dest).await?
                 }
 
                 if template {
@@ -123,12 +126,12 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
                     .await?;
 
                 // Remove file if already present
-                if common::check_file_exists(dest).await? {
-                    common::delete_file(dest).await?
+                if file_fs::check_file_exists(dest).await? {
+                    file_fs::delete_file(dest).await?
                 }
 
                 if template {
@@ -143,16 +146,16 @@ impl Destination {
 
                     sudo::sudo_exec(
                         "cp",
-                        &[&common::path_to_string(&temp_file)?,
-                            &common::path_to_string(dest)?],
+                        &[&file_fs::path_to_string(&temp_file)?,
+                            &file_fs::path_to_string(dest)?],
                         Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
                     )
                     .await?;
                 } else {
                     sudo::sudo_exec(
                         "cp",
-                        &[&common::path_to_string(&source)?,
-                            &common::path_to_string(dest)?],
+                        &[&file_fs::path_to_string(&source)?,
+                            &file_fs::path_to_string(dest)?],
                         Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
                     )
                     .await?;
@@ -170,8 +173,8 @@ impl Destination {
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
                 tokio::fs::create_dir_all(parent).await?;
-                if common::check_file_exists(dest).await? {
-                    common::delete_file(dest).await?
+                if file_fs::check_file_exists(dest).await? {
+                    file_fs::delete_file(dest).await?
                 }
                 tokio::fs::symlink(&source, dest).await.with_context(|| {
                     format!("Failed to copy {:?} to {:?}", source.as_ref(), dest)
@@ -182,14 +185,14 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
                     .await?;
 
                 sudo::sudo_exec(
                     "ln",
                     &["-sf",
-                        &common::path_to_string(&source)?,
-                        &common::path_to_string(dest)?],
+                        &file_fs::path_to_string(&source)?,
+                        &file_fs::path_to_string(dest)?],
                     Some(format!("Link {:?} to {:?}", source.as_ref(), &dest).as_str()),
                 )
                 .await?;
@@ -233,7 +236,7 @@ impl Destination {
                 let parent = dest
                     .parent()
                     .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &common::path_to_string(parent)?], None)
+                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
                     .await?;
 
                 let temp_file = tempfile::NamedTempFile::new()?;
@@ -256,8 +259,8 @@ impl Destination {
 
                 sudo::sudo_exec(
                     "cp",
-                    &[&common::path_to_string(&temp_file)?,
-                        &common::path_to_string(dest)?],
+                    &[&file_fs::path_to_string(&temp_file)?,
+                        &file_fs::path_to_string(dest)?],
                     None,
                 )
                 .await?;
@@ -280,7 +283,7 @@ pub(crate) struct ManagedFile {
 impl ManagedFile {
     pub(crate) async fn perform(
         &self,
-        stores: &(crate::cache::Store, Option<crate::cache::Store>),
+        stores: &(crate::store::db::Store, Option<crate::store::db::Store>),
         context: &serde_json::Value,
         hb: &handlebars::Handlebars<'static>,
     ) -> Result<()> {
@@ -324,7 +327,7 @@ impl ManagedFile {
                             )
                         })?
                     {
-                        let src_checksum = common::calculate_sha256_checksum(&db_src_checksum.0)
+                        let src_checksum = file_checksum::calculate_sha256_checksum(&db_src_checksum.0)
                             .await
                             .with_context(|| {
                                 format!(
@@ -352,7 +355,7 @@ impl ManagedFile {
                         .check_backup_exists(destination.path())
                         .await
                         .map_err(|e| e.into_anyhow())?
-                        & common::check_file_exists(destination.path()).await?
+                        & file_fs::check_file_exists(destination.path()).await?
                     {
                         store
                             .add_backup(destination.path())
@@ -369,14 +372,14 @@ impl ManagedFile {
                         })?;
 
                     // Set permissions
-                    common::set_file_metadata(
+                    file_metadata::set_file_metadata(
                         destination.path(),
-                        common::FileMetadata {
-                            uid: owner.as_ref().map(common::user_to_uid).transpose()?,
-                            gid: group.as_ref().map(common::group_to_gid).transpose()?,
+                        file_metadata::FileMetadata {
+                            uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
+                            gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
                             permissions: permissions
                                 .as_ref()
-                                .map(common::perms_str_to_int)
+                                .map(file_permissions::perms_str_to_int)
                                 .transpose()?,
                             is_symlink: false,
                             symlink_source: None,
@@ -387,13 +390,13 @@ impl ManagedFile {
 
                     // Record file in store
                     store
-                        .add_file(crate::cache::StoreFile {
+                        .add_file(crate::store::files::StoreFile {
                             module: self.module.clone(),
                             source: Some(source.display().to_string()),
-                            source_checksum: Some(common::calculate_sha256_checksum(source).await?),
+                            source_checksum: Some(file_checksum::calculate_sha256_checksum(source).await?),
                             destination: destination.path().display().to_string(),
                             destination_checksum: Some(
-                                common::calculate_sha256_checksum(destination.path()).await?,
+                                file_checksum::calculate_sha256_checksum(destination.path()).await?,
                             ),
                             operation: "copy".to_string(),
                             user: Some(std::env::var("USER")?),
@@ -425,8 +428,8 @@ impl ManagedFile {
                 };
 
                 // Perform symlink operation
-                if common::check_file_exists(destination.path()).await?
-                    && common::check_link_exists(destination.path(), Some(source)).await?
+                if file_fs::check_file_exists(destination.path()).await?
+                    && file_fs::check_link_exists(destination.path(), Some(source)).await?
                     && store
                         .check_file_exists(destination.path())
                         .await
@@ -438,7 +441,7 @@ impl ManagedFile {
                         .check_backup_exists(destination.path())
                         .await
                         .map_err(|e| e.into_anyhow())?
-                        & common::check_file_exists(destination.path()).await?
+                        & file_fs::check_file_exists(destination.path()).await?
                     {
                         store
                             .add_backup(destination.path())
@@ -456,11 +459,11 @@ impl ManagedFile {
                         })?;
 
                     // Set permissions
-                    common::set_file_metadata(
+                    file_metadata::set_file_metadata(
                         destination.path(),
-                        common::FileMetadata {
-                            uid: owner.as_ref().map(common::user_to_uid).transpose()?,
-                            gid: group.as_ref().map(common::group_to_gid).transpose()?,
+                        file_metadata::FileMetadata {
+                            uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
+                            gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
                             permissions: None,
                             is_symlink: true,
                             symlink_source: None,
@@ -470,10 +473,10 @@ impl ManagedFile {
                     .await?;
 
                     store
-                        .add_file(crate::cache::StoreFile {
+                        .add_file(crate::store::files::StoreFile {
                             module: self.module.clone(),
                             source: Some(source.display().to_string()),
-                            source_checksum: Some(common::calculate_sha256_checksum(source).await?),
+                            source_checksum: Some(file_checksum::calculate_sha256_checksum(source).await?),
                             destination: destination.path().display().to_string(),
                             destination_checksum: None,
                             operation: "link".to_string(),
@@ -514,7 +517,7 @@ impl ManagedFile {
                     .check_backup_exists(destination.path())
                     .await
                     .map_err(|e| e.into_anyhow())?
-                    & common::check_file_exists(destination.path()).await?
+                    & file_fs::check_file_exists(destination.path()).await?
                 {
                     store
                         .add_backup(destination.path())
@@ -526,14 +529,14 @@ impl ManagedFile {
                     .create(content, template.unwrap(), context, hb)
                     .await?;
 
-                common::set_file_metadata(
+                file_metadata::set_file_metadata(
                     destination.path(),
-                    common::FileMetadata {
-                        uid: owner.as_ref().map(common::user_to_uid).transpose()?,
-                        gid: group.as_ref().map(common::group_to_gid).transpose()?,
+                    file_metadata::FileMetadata {
+                        uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
+                        gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
                         permissions: permissions
                             .as_ref()
-                            .map(common::perms_str_to_int)
+                            .map(file_permissions::perms_str_to_int)
                             .transpose()?,
                         is_symlink: false,
                         symlink_source: None,
@@ -543,13 +546,13 @@ impl ManagedFile {
                 .await?;
 
                 store
-                    .add_file(crate::cache::StoreFile {
+                    .add_file(crate::store::files::StoreFile {
                         module: self.module.clone(),
                         source: None,
                         source_checksum: None,
                         destination: destination.path().display().to_string(),
                         destination_checksum: Some(
-                            common::calculate_sha256_checksum(destination.path()).await?,
+                            file_checksum::calculate_sha256_checksum(destination.path()).await?,
                         ),
                         operation: "create".to_string(),
                         user: Some(std::env::var("USER")?),
@@ -593,7 +596,7 @@ pub(crate) struct Phase {
 pub(crate) async fn assign_module_config(
     modules: std::collections::BTreeSet<crate::modules::Module>,
     context: serde_json::Value,
-    stores: &(crate::cache::Store, Option<crate::cache::Store>),
+    stores: &(crate::store::db::Store, Option<crate::store::db::Store>),
     messages: &mut (
         std::collections::BTreeMap<String, Vec<String>>,
         std::collections::BTreeMap<String, Vec<String>>,
@@ -738,7 +741,7 @@ pub(crate) async fn assign_module_config(
                 .await
                 .map_err(|e| e.into_anyhow())?;
 
-            crate::common::delete_file(&k)
+            file_fs::delete_file(&k)
                 .await
                 .with_context(|| format!("Failed to remove file {:?}", &k))?;
 
@@ -779,7 +782,7 @@ pub(crate) async fn assign_module_config(
                 .await
                 .map_err(|e| e.into_anyhow())?;
 
-            crate::common::delete_file(&k)
+            file_fs::delete_file(&k)
                 .await
                 .with_context(|| format!("Failed to remove file {:?}", &k))?;
 

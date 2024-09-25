@@ -8,7 +8,7 @@ use crate::utils::file_fs;
 use crate::read_module;
 
 async fn generate_file<P: AsRef<Path>>(
-    stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
+    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
     target: P,
     generator: &read_module::Generate,
     context: &serde_json::Value,
@@ -52,7 +52,7 @@ async fn generate_file<P: AsRef<Path>>(
         fs::write(&target, content).await?;
         stores
             .0
-            .add_module(crate::cache::StoreModule {
+            .add_module(crate::store::modules::StoreModule {
                 name: "__dotdeploy_generated".to_string(),
                 location: std::env::var("DOD_MODULES_ROOT")?,
                 user: Some(std::env::var("USER")?),
@@ -65,7 +65,7 @@ async fn generate_file<P: AsRef<Path>>(
 
         stores
             .0
-            .add_file(crate::cache::StoreFile {
+            .add_file(crate::store::files::StoreFile {
                 module: "__dotdeploy_generated".to_string(),
                 source: None,
                 source_checksum: None,
@@ -83,7 +83,7 @@ async fn generate_file<P: AsRef<Path>>(
 }
 
 pub(crate) async fn generate_files(
-    stores: Arc<(crate::cache::Store, Option<crate::cache::Store>)>,
+    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
     generators: std::collections::BTreeMap<std::path::PathBuf, read_module::Generate>,
     context: serde_json::Value,
     hb: Arc<handlebars::Handlebars<'static>>,

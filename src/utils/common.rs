@@ -31,7 +31,7 @@ use std::io::{stdin, stdout, Write};
 ///     println!("User chose not to continue");
 /// }
 /// ```
-pub fn ask_boolean(prompt: &str) -> bool {
+pub(crate) fn ask_boolean(prompt: &str) -> bool {
     // Initialize buffer with a non-empty string to enter the loop at least once
     let mut buf = String::from("a");
     // Continue asking until a valid response is given

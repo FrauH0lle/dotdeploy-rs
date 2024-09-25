@@ -9,7 +9,6 @@ use std::sync::Arc;
 #[macro_use]
 extern crate log;
 
-mod cache;
 mod cli;
 mod config;
 mod deploy;
@@ -19,6 +18,7 @@ mod packages;
 mod phases;
 mod read_module;
 mod remove;
+mod store;
 mod utils;
 
 lazy_static! {
@@ -154,13 +154,13 @@ async fn run() -> Result<bool> {
 
                 // Initialize stores
                 let stores = Arc::new((
-                    crate::cache::init_user_store(None)
+                    crate::store::init::init_user_store(None)
                         .await
                         .map_err(|e| e.into_anyhow())
                         .context("Failed to initialize user store")?,
                     if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
                         Some(
-                            crate::cache::init_system_store()
+                            crate::store::init::init_system_store()
                                 .await
                                 .map_err(|e| e.into_anyhow())
                                 .context("Failed to initialize system store")?,
@@ -172,7 +172,7 @@ async fn run() -> Result<bool> {
 
                 // Add modules to stores
                 for module in modules.iter() {
-                    let m = crate::cache::StoreModule {
+                    let m = crate::store::modules::StoreModule {
                         name: module.name.clone(),
                         location: utils::file_fs::path_to_string(&module.location)?,
                         user: Some(std::env::var("USER")?),
@@ -234,9 +234,9 @@ async fn run() -> Result<bool> {
                 drop(stores);
 
                 // Wait until SQLite cleans up the WAL and SHM files
-                cache::close_connection(&user_store_path)?;
+                store::db::close_connection(&user_store_path)?;
                 if !sys_store_path.as_os_str().is_empty() {
-                    cache::close_connection(&sys_store_path)?;
+                    store::db::close_connection(&sys_store_path)?;
                 }
 
                 // Display messages
@@ -262,12 +262,12 @@ async fn run() -> Result<bool> {
             Some(modules) => {
                 // Initialize stores
                 let stores = Arc::new((
-                    crate::cache::init_user_store(None)
+                    crate::store::init::init_user_store(None)
                         .await
                         .map_err(|e| e.into_anyhow())?,
                     if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
                         Some(
-                            crate::cache::init_system_store()
+                            crate::store::init::init_system_store()
                                 .await
                                 .map_err(|e| e.into_anyhow())?,
                         )
@@ -278,7 +278,7 @@ async fn run() -> Result<bool> {
 
                 // let mut modules = vec![["hosts/", &dotdeploy_config.hostname.unwrap()].join("")];
                 let mut module_configs = std::collections::BTreeSet::new();
-                let mut files: Vec<crate::cache::StoreFile> = vec![];
+                let mut files: Vec<crate::store::files::StoreFile> = vec![];
                 // Try to add host module
                 // let host_module = ["hosts/", &dotdeploy_config.hostname].join("");
                 for module in modules.iter() {
@@ -373,9 +373,9 @@ async fn run() -> Result<bool> {
                 drop(stores);
 
                 // Wait until SQLite cleans up the WAL and SHM files
-                cache::close_connection(&user_store_path)?;
+                store::db::close_connection(&user_store_path)?;
                 if !sys_store_path.as_os_str().is_empty() {
-                    cache::close_connection(&sys_store_path)?;
+                    store::db::close_connection(&sys_store_path)?;
                 }
 
                 // Display messages
