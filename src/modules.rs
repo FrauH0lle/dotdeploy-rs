@@ -1,42 +1,45 @@
+//! This module defines the structure and operations for managing Dotdeploy modules.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
 use crate::read_module;
 
-/// Dotdeploy module
+/// Represents a Dotdeploy module with its properties and configuration.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Module {
-    /// Module name
+    /// The name of the module
     pub(crate) name: String,
-    /// The location/path of the module
+    /// The file system path to the module
     pub(crate) location: PathBuf,
-    /// Reason why a module is added
+    /// The reason for adding this module (e.g., "manual" or "automatic")
     pub(crate) reason: String,
-    /// Module configuration,
+    /// The parsed configuration of the module
     pub(crate) config: read_module::ModuleConfig,
 }
 
-/// Adds a module to the given BTreeSet of modules, processing its dependencies recursively.
+/// Adds a module and its dependencies to the provided set of modules.
 ///
-/// This function attempts to read the module's configuration from a specified path based on whether
-/// the module is categorized under "hosts" or is a regular module. If the module's configuration is
-/// successfully read, the function then recursively processes any dependencies specified within the
-/// configuration, adding them to the set of modules before finally adding the module itself.
+/// This function reads the module's configuration, processes its dependencies recursively, and adds
+/// the module to the set. It also updates the context with any variables defined in the module's
+/// configuration.
 ///
 /// # Parameters
 ///
-/// - `module_name`: The name of the module to be added. This name is used to determine the path
-///   to the module's configuration file.
-/// - `dotdeploy_config`: Reference to the global configuration of the dotdeploy, which contains
-///   paths to the root directories for hosts and modules.
-/// - `modules`: A mutable reference to a BTreeSet of `Module` instances where the module (and
-///   any of its dependencies) will be inserted.
+/// - `module_name`: The name of the module to be added.
+/// - `dotdeploy_config`: Reference to the global Dotdeploy configuration.
+/// - `modules`: A mutable reference to a BTreeSet where modules will be inserted.
+/// - `manual`: A boolean indicating if the module is being added manually.
+/// - `context`: A mutable reference to a map for storing context variables.
+///
+/// # Returns
+///
+/// A Result indicating success or failure of the module addition process.
 ///
 /// # Errors
 ///
-/// - The function logs a error message if the module's configuration cannot be read but will try to
-///   continue.
+/// Returns an error if the module's configuration cannot be read or processed.
 pub(crate) fn add_module(
     module_name: &str,
     dotdeploy_config: &crate::config::ConfigFile,
@@ -45,55 +48,54 @@ pub(crate) fn add_module(
     context: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
     debug!("Processing module: {}", module_name);
-    // Export module name
 
-    // Determine the path to the module's configuration file based on its type (host or regular
-    // module).
+    // Determine the path to the module's configuration file
     let path: PathBuf = if module_name.starts_with("hosts") {
+        // For host-specific modules
         dotdeploy_config
             .hosts_root
             .join(module_name.trim_start_matches("hosts/"))
     } else {
+        // For regular modules
         dotdeploy_config.modules_root.join(module_name)
     };
 
-    // Export current module path
+    // Set the current module path as an environment variable
     std::env::set_var("DOD_CURRENT_MODULE", &path);
 
-    // Attempt to read the module's configuration.
+    // Attempt to read and process the module's configuration
     match read_module::ModuleConfig::read_config(&path) {
         Ok(config) => {
-            // Extract context vars
+            // Extract and add context variables from the module config
             if let Some(ref vars) = config.context_vars {
                 for (k, v) in vars.iter() {
                     context.insert(k.to_string(), v.to_string());
                 }
             }
 
-            // If dependencies are specified, process each recursively.
+            // Recursively process dependencies
             if let Some(dependencies) = &config.depends {
                 for dependency in dependencies {
                     add_module(dependency, dotdeploy_config, modules, false, context)?;
                 }
             }
 
-            // Insert the module into the set.
+            // Add the current module to the set
             modules.insert(Module {
                 name: module_name.to_string(),
                 location: path,
                 config,
-                reason: match manual {
-                    true => "manual".to_string(),
-                    false => "automatic".to_string(),
-                },
+                reason: if manual { "manual" } else { "automatic" }.to_string(),
             });
             Ok(())
         }
-        // Error if the module's configuration cannot be read.
         Err(e) => Err(e)
             .with_context(|| format!("Failed to read module configuration for {}", module_name)),
     }
 }
+
+//
+// Tests
 
 #[cfg(test)]
 mod tests {
