@@ -94,7 +94,7 @@ pub(crate) async fn remove(
     mut phases: BTreeMap<String, crate::phases::Phase>,
     stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
     files: Vec<crate::store::files::StoreFile>,
-    dotdeploy_config: &crate::config::ConfigFile,
+    dotdeploy_config: &crate::config::DotdeployConfig,
 ) -> Result<()> {
     let phase_name = "remove";
     info!("Starting {} phase", phase_name.to_uppercase());

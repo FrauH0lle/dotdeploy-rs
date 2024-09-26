@@ -10,4 +10,6 @@ pub(crate) mod errors;
 pub(crate) mod files;
 pub(crate) mod init;
 pub(crate) mod modules;
+
+#[cfg(test)]
 pub(crate) mod tests;

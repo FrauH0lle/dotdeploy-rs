@@ -1,10 +1,12 @@
 //! This module defines the structure and operations for managing Dotdeploy modules.
 
-use std::path::PathBuf;
+pub(crate) mod queue;
+
+use std::{collections::VecDeque, path::PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::read_module;
+use crate::read_module::ModuleConfig;
 
 /// Represents a Dotdeploy module with its properties and configuration.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -16,7 +18,7 @@ pub(crate) struct Module {
     /// The reason for adding this module (e.g., "manual" or "automatic")
     pub(crate) reason: String,
     /// The parsed configuration of the module
-    pub(crate) config: read_module::ModuleConfig,
+    pub(crate) config: ModuleConfig,
 }
 
 /// Adds a module and its dependencies to the provided set of modules.
@@ -42,7 +44,7 @@ pub(crate) struct Module {
 /// Returns an error if the module's configuration cannot be read or processed.
 pub(crate) fn add_module(
     module_name: &str,
-    dotdeploy_config: &crate::config::ConfigFile,
+    dotdeploy_config: &crate::config::DotdeployConfig,
     modules: &mut std::collections::BTreeSet<Module>,
     manual: bool,
     context: &mut std::collections::BTreeMap<String, String>,
@@ -64,7 +66,7 @@ pub(crate) fn add_module(
     std::env::set_var("DOD_CURRENT_MODULE", &path);
 
     // Attempt to read and process the module's configuration
-    match read_module::ModuleConfig::read_config(&path) {
+    match ModuleConfig::read_config(&path) {
         Ok(config) => {
             // Extract and add context variables from the module config
             if let Some(ref vars) = config.context_vars {
@@ -129,7 +131,7 @@ mod tests {
     #[test]
     fn test_add_module_with_dependencies() -> Result<()> {
         let temp_dir = tempdir().expect("Failed to create temp dir");
-        let dotdeploy_config = crate::config::ConfigFile {
+        let dotdeploy_config = crate::config::DotdeployConfig {
             config_root: temp_dir.path().to_path_buf(),
             hosts_root: temp_dir.path().to_path_buf(),
             modules_root: temp_dir.path().to_path_buf(),

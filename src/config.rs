@@ -39,7 +39,7 @@ use std::path::PathBuf;
 /// deploy_sys_files = false
 /// ```
 #[derive(Deserialize, Debug)]
-pub(crate) struct ConfigFile {
+pub(crate) struct DotdeployConfig {
     /// Root folder of dotfiles.
     pub(crate) config_root: PathBuf,
     /// Root folder of modules. This path stores the module declarations.
@@ -62,7 +62,7 @@ pub(crate) struct ConfigFile {
     pub(crate) skip_pkg_install: bool,
 }
 
-impl ConfigFile {
+impl DotdeployConfig {
     /// Builds the path to the dotdeploy config file based on environment variables.
     ///
     /// Checks `XDG_CONFIG_HOME` first and then `HOME`. Returns the path to the config file as a
@@ -148,11 +148,11 @@ impl ConfigFile {
         }
     }
 
-    /// Initialize the [ConfigFile] struct.
+    /// Initialize the [DotdeployConfig] struct.
     ///
     /// If found, it parses the config file and tries to expand all paths. If the config file is
-    /// absent or fields are missing it will use default values (see [ConfigFile]).
-    pub(crate) fn init() -> Result<ConfigFile> {
+    /// absent or fields are missing it will use default values (see [DotdeployConfig]).
+    pub(crate) fn init() -> Result<DotdeployConfig> {
         // Attempt to read the config file, use an empty string if not found
         let conf_string = match Self::read_config_file() {
             Ok(s) => s,
@@ -224,8 +224,8 @@ impl ConfigFile {
                     .to_string()
             });
 
-        // Construct and return the final ConfigFile struct
-        Ok(ConfigFile {
+        // Construct and return the final DotdeployConfig struct
+        Ok(DotdeployConfig {
             config_root: PathBuf::from(config_root),
             modules_root: PathBuf::from(modules_root),
             hosts_root: PathBuf::from(hosts_root),
@@ -300,7 +300,7 @@ mod tests {
             Ok(temp_dir.path().to_string_lossy().to_string())
         );
 
-        let conf = ConfigFile::init()?;
+        let conf = DotdeployConfig::init()?;
 
         assert_eq!(
             conf.config_root,
@@ -339,7 +339,7 @@ mod tests {
         };
         create_config_file(&temp_dir, &test_config)?;
 
-        let conf = ConfigFile::init()?;
+        let conf = DotdeployConfig::init()?;
 
         assert_eq!(conf.config_root, PathBuf::from("/tmp"));
         assert_eq!(conf.modules_root, PathBuf::from("/tmp/modules"));
@@ -360,7 +360,7 @@ mod tests {
         };
         create_config_file(&temp_dir, &test_config)?;
 
-        let conf = ConfigFile::init()?;
+        let conf = DotdeployConfig::init()?;
         assert_eq!(conf.config_root, PathBuf::from("/foo"));
         assert_eq!(conf.modules_root, PathBuf::from("/bar"));
         assert_eq!(conf.hosts_root, PathBuf::from("/baz"));

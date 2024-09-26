@@ -26,7 +26,7 @@ pub(crate) async fn deploy(
     stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
     context: serde_json::Value,
     hb: Arc<handlebars::Handlebars<'static>>,
-    dotdeploy_config: &crate::config::ConfigFile,
+    dotdeploy_config: &crate::config::DotdeployConfig,
 ) -> Result<()> {
     let hb = Arc::new(hb);
     let context = Arc::new(context);
