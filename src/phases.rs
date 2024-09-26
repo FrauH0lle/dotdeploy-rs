@@ -574,7 +574,7 @@ pub(crate) struct Phase {
     /// Files to deploy during the phase.
     pub(crate) files: Option<VecDeque<ManagedFile>>,
     /// Actions to be executed during the stages.
-    pub(crate) actions: Option<BTreeMap<String, Vec<crate::read_module::ActionConfig>>>,
+    pub(crate) actions: Option<BTreeMap<String, Vec<crate::modules::actions::ModuleAction>>>,
     /// Packages to install. Will be only used in the "deploy" phase.
     pub(crate) packages: Option<Vec<String>>,
 }
@@ -601,7 +601,7 @@ pub(crate) async fn assign_module_config(
         std::collections::BTreeMap<String, Vec<String>>,
         std::collections::BTreeMap<String, Vec<String>>,
     ),
-    generators: &mut std::collections::BTreeMap<std::path::PathBuf, crate::read_module::Generate>,
+    generators: &mut std::collections::BTreeMap<std::path::PathBuf, crate::modules::generate::Generate>,
     hb: &handlebars::Handlebars<'static>,
 ) -> Result<BTreeMap<String, Phase>> {
     let mut phases: BTreeMap<String, Phase> = BTreeMap::new();
@@ -837,7 +837,7 @@ pub(crate) async fn assign_module_config(
 /// Assigns file operations from a module to their corresponding phase.
 fn assign_files_to_phases(
     module_name: String,
-    files: BTreeMap<PathBuf, crate::read_module::FileConfig>,
+    files: BTreeMap<PathBuf, crate::modules::files::ModuleFile>,
     phases: &mut BTreeMap<String, Phase>,
     user_files: &mut HashMap<String, (Option<String>, String)>,
     sys_files: &mut HashMap<String, (Option<String>, String)>,
@@ -977,7 +977,7 @@ fn assign_files_to_phases(
 
 /// Assigns actions from a module to their corresponding phases and stages.
 fn assign_actions_to_phases(
-    actions: BTreeMap<String, BTreeMap<String, Vec<crate::read_module::ActionConfig>>>,
+    actions: BTreeMap<String, BTreeMap<String, Vec<crate::modules::actions::ModuleAction>>>,
     phases: &mut BTreeMap<String, Phase>,
 ) -> Result<()> {
     // Iterate over each action's phase and its corresponding stages and actions
@@ -1011,7 +1011,7 @@ fn assign_actions_to_phases(
 
 /// Appends package configurations from a module to the deploy phase.
 fn append_packages(
-    packages: Vec<crate::read_module::Packages>,
+    packages: Vec<crate::modules::packages::ModulePackages>,
     phases: &mut BTreeMap<String, Phase>,
 ) -> Result<()> {
     if let Some(deploy_phase) = phases.get_mut("deploy") {

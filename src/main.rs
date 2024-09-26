@@ -12,11 +12,9 @@ extern crate log;
 mod cli;
 mod config;
 mod deploy;
-mod generate;
 mod modules;
 mod packages;
 mod phases;
-mod read_module;
 mod remove;
 mod store;
 mod utils;
@@ -28,9 +26,8 @@ lazy_static! {
     pub(crate) static ref USE_SUDO: AtomicBool = AtomicBool::new(false);
 }
 
-#[tokio::main]
-async fn main() {
-    match run().await {
+fn main() {
+    match run() {
         Ok(success) if success => std::process::exit(0),
         Ok(_) => std::process::exit(1),
         Err(e) => {
@@ -53,6 +50,7 @@ pub(crate) fn display_error(error: anyhow::Error) {
     error!("{}", error_message);
 }
 
+#[tokio::main]
 async fn run() -> Result<bool> {
     let cli = cli::get_cli();
 
@@ -79,7 +77,7 @@ async fn run() -> Result<bool> {
     // The Dotdeploy config should be on the top level as it contains information like the paths
     // which are needed often.
     let mut dotdeploy_config =
-        config::ConfigFile::init().context("Failed to initialize Dotdeploy config")?;
+        config::DotdeployConfig::init().context("Failed to initialize Dotdeploy config")?;
     if cli.skip_pkg_install {
         dotdeploy_config.skip_pkg_install = cli.skip_pkg_install;
     }
@@ -89,11 +87,13 @@ async fn run() -> Result<bool> {
     USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
 
     // Make config available as environment variables
-    std::env::set_var("DOD_ROOT", &dotdeploy_config.config_root);
-    std::env::set_var("DOD_MODULES_ROOT", &dotdeploy_config.modules_root);
-    std::env::set_var("DOD_HOSTS_ROOT", &dotdeploy_config.hosts_root);
-    std::env::set_var("DOD_HOSTNAME", &dotdeploy_config.hostname);
-    std::env::set_var("DOD_DISTRO", &dotdeploy_config.distribution);
+    unsafe {
+        std::env::set_var("DOD_ROOT", &dotdeploy_config.config_root);
+        std::env::set_var("DOD_MODULES_ROOT", &dotdeploy_config.modules_root);
+        std::env::set_var("DOD_HOSTS_ROOT", &dotdeploy_config.hosts_root);
+        std::env::set_var("DOD_HOSTNAME", &dotdeploy_config.hostname);
+        std::env::set_var("DOD_DISTRO", &dotdeploy_config.distribution);
+    }
 
     trace!("Config values: {:#?}", &dotdeploy_config);
 
@@ -132,25 +132,21 @@ async fn run() -> Result<bool> {
         std::collections::BTreeMap::new(),
     );
 
-    let mut generators: std::collections::BTreeMap<std::path::PathBuf, read_module::Generate> =
+    let mut generators: std::collections::BTreeMap<std::path::PathBuf, crate::modules::generate::Generate> =
         std::collections::BTreeMap::new();
 
     match &cli.command {
         cli::Commands::Deploy { modules } => match modules {
             None => {
-                // let mut modules = vec![["hosts/", &dotdeploy_config.hostname.unwrap()].join("")];
-                let mut modules = std::collections::BTreeSet::new();
+                let mut module_queue = modules::queue::ModuleQueue {
+                    modules: std::collections::BTreeSet::new(),
+                    context,
+                };
                 // Try to add host module
-                let host_module = ["hosts/", &dotdeploy_config.hostname].join("");
-                modules::add_module(
-                    &host_module,
-                    &dotdeploy_config,
-                    &mut modules,
-                    true,
-                    &mut context,
-                )?;
+                let host_module = vec![["hosts/", &dotdeploy_config.hostname].join("").to_string()];
+                module_queue.add_modules(&host_module, &dotdeploy_config, true)?;
 
-                trace!("Context values: {:#?}", &context);
+                trace!("Context values: {:#?}", &module_queue.context);
 
                 // Initialize stores
                 let stores = Arc::new((
@@ -171,7 +167,7 @@ async fn run() -> Result<bool> {
                 ));
 
                 // Add modules to stores
-                for module in modules.iter() {
+                for module in module_queue.modules.iter() {
                     let m = crate::store::modules::StoreModule {
                         name: module.name.clone(),
                         location: utils::file_fs::path_to_string(&module.location)?,
@@ -193,8 +189,8 @@ async fn run() -> Result<bool> {
                 }
 
                 let phases = phases::assign_module_config(
-                    modules,
-                    serde_json::to_value(&context)?,
+                    module_queue.modules,
+                    serde_json::to_value(&module_queue.context)?,
                     &stores,
                     &mut messages,
                     &mut generators,
@@ -205,17 +201,17 @@ async fn run() -> Result<bool> {
                 crate::deploy::deploy(
                     phases,
                     Arc::clone(&stores),
-                    serde_json::to_value(&context)?,
+                    serde_json::to_value(&module_queue.context)?,
                     Arc::clone(&handlebars),
                     &dotdeploy_config,
                 )
                 .await?;
 
                 // Generate files
-                crate::generate::generate_files(
+                crate::modules::generate::generate_files(
                     Arc::clone(&stores),
                     generators,
-                    serde_json::to_value(context)?,
+                    serde_json::to_value(&module_queue.context)?,
                     handlebars,
                 )
                 .await?;
@@ -277,19 +273,18 @@ async fn run() -> Result<bool> {
                 ));
 
                 // let mut modules = vec![["hosts/", &dotdeploy_config.hostname.unwrap()].join("")];
-                let mut module_configs = std::collections::BTreeSet::new();
+                let module_configs = std::collections::BTreeSet::new();
                 let mut files: Vec<crate::store::files::StoreFile> = vec![];
                 // Try to add host module
                 // let host_module = ["hosts/", &dotdeploy_config.hostname].join("");
-                for module in modules.iter() {
-                    modules::add_module(
-                        module,
-                        &dotdeploy_config,
-                        &mut module_configs,
-                        true,
-                        &mut context,
-                    )?;
+                let mut module_queue = modules::queue::ModuleQueue {
+                    modules: std::collections::BTreeSet::new(),
+                    context,
+                };
 
+                module_queue.add_modules(modules, &dotdeploy_config, true)?;
+
+                for module in modules.iter() {
                     let user_files = stores
                         .0
                         .get_all_files(&module)
@@ -324,7 +319,7 @@ async fn run() -> Result<bool> {
 
                 let phases = phases::assign_module_config(
                     module_configs,
-                    serde_json::to_value(&context)?,
+                    serde_json::to_value(&module_queue.context)?,
                     &stores,
                     &mut messages,
                     &mut generators,
@@ -351,10 +346,10 @@ async fn run() -> Result<bool> {
                 }
 
                 // Generate files
-                crate::generate::generate_files(
+                crate::modules::generate::generate_files(
                     Arc::clone(&stores),
                     generators,
-                    serde_json::to_value(context)?,
+                    serde_json::to_value(&module_queue.context)?,
                     handlebars,
                 )
                 .await?;

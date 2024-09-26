@@ -5,7 +5,7 @@
 //! functionality to elevate privileges when necessary, using sudo for operations that might require
 //! higher permissions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::fs;
@@ -127,6 +127,34 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
             Err(e).with_context(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
         }
     }
+}
+
+/// Reads all files in a directory recursively.
+///
+/// This function traverses the given directory and all its subdirectories, collecting the paths of
+/// all files encountered.
+///
+/// # Arguments
+///
+/// * `path` - The path of the directory to read.
+/// # Returns
+///
+/// * `Ok(Vec<PathBuf>)` - A vector with subdirectories.
+/// * `Err` - If an error occurs during the operation.
+pub(crate) fn read_directory<P: AsRef<Path>>(path: P) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            // If it's a directory, recursively read its contents
+            files.extend(read_directory(&path)?);
+        } else {
+            // If it's a file, add it to the list
+            files.push(path)
+        }
+    }
+    Ok(files)
 }
 
 /// Ensures that a directory exists, creating it if necessary, using sudo if needed.
@@ -332,6 +360,38 @@ mod tests {
 
         assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
         assert!(check_link_exists(&temp_link, None).await?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_directory() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let files = read_directory(temp_dir.path())?;
+        assert!(files.is_empty());
+
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::File::create(temp_dir.path().join("file1.txt"))?;
+        std::fs::File::create(temp_dir.path().join("file2.txt"))?;
+
+        let files = read_directory(temp_dir.path())?;
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file1.txt"));
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file2.txt"));
+
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join("test1").join("test2"))?;
+        std::fs::File::create(temp_dir.path().join("file1.txt"))?;
+        std::fs::File::create(temp_dir.path().join("file2.txt"))?;
+        std::fs::File::create(temp_dir.path().join("test1").join("file3.txt"))?;
+        std::fs::File::create(temp_dir.path().join("test1").join("test2").join("file4.txt"))?;
+
+        let files = read_directory(temp_dir.path())?;
+        assert_eq!(files.len(), 4, "Should find 4 files");
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file1.txt"));
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file2.txt"));
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file3.txt"));
+        assert!(files.iter().any(|f| f.file_name().unwrap() == "file4.txt"));
+
         Ok(())
     }
 

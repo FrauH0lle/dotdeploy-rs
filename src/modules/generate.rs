@@ -1,16 +1,67 @@
-//! This module handles the generation of files based on templates and module configurations.
+//! Module for handling file generation in the dotdeploy configuration.
 //!
-//! It provides functionality to generate individual files and manage the generation process for
-//! multiple files concurrently.
+//! This module defines the structure and behavior of file generation that can be performed during
+//! the deployment process. It provides functionality to generate individual files and manage the
+//! generation process for multiple files concurrently.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use handlebars::Handlebars;
+use serde::Deserialize;
+use serde_json::Value;
 use tokio::fs;
 
-use crate::read_module;
+use crate::modules::conditional::Conditional;
+use crate::store::db::Store;
+use crate::store::files::StoreFile;
+use crate::store::modules::StoreModule;
 use crate::utils::file_fs;
+
+/// Configuration for file generation within a module.
+///
+/// This struct represents the configuration for generating a file as part of the deployment
+/// process. It includes options for prepending and appending content, specifying a source file, and
+/// conditional generation.
+#[derive(Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Generate {
+    /// Optional content to prepend to the generated file.
+    ///
+    /// If provided, this content will be added at the beginning of the generated file.
+    pub(crate) prepend: Option<String>,
+
+    /// The name or path of the source file.
+    ///
+    /// This specifies the main content source for the generated file. It could be a template file
+    /// or a regular file that will be processed.
+    pub(crate) source: String,
+
+    /// Optional content to append to the generated file.
+    ///
+    /// If provided, this content will be added at the end of the generated file.
+    pub(crate) append: Option<String>,
+
+    /// An optional conditional expression for file generation.
+    ///
+    /// If provided, this expression is evaluated at runtime. The file is only generated if the
+    /// condition evaluates to true. If not provided, the file will always be generated (subject to
+    /// other deployment rules).
+    pub(crate) eval_when: Option<String>,
+}
+
+/// Implementation of the `Conditional` trait for `Generate`.
+///
+/// This implementation allows `Generate` to be used in contexts where conditional evaluation is
+/// required, such as when deciding whether to generate a file based on runtime conditions.
+impl Conditional for Generate {
+    fn eval_when(&self) -> &Option<String> {
+        // Return a reference to the `eval_when` field, which contains the conditional expression
+        // (if any) for this file generation
+        &self.eval_when
+    }
+}
 
 /// Generates a single file based on the provided configuration and context.
 ///
@@ -29,11 +80,11 @@ use crate::utils::file_fs;
 ///
 /// A Result indicating success or failure of the file generation process
 async fn generate_file<P: AsRef<Path>>(
-    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
+    stores: Arc<(Store, Option<Store>)>,
     target: P,
-    generator: &read_module::Generate,
-    context: &serde_json::Value,
-    hb: &handlebars::Handlebars<'static>,
+    generator: &Generate,
+    context: &Value,
+    hb: &Handlebars<'static>,
 ) -> Result<()> {
     // Retrieve all modules from the store
     let modules = stores
@@ -83,7 +134,7 @@ async fn generate_file<P: AsRef<Path>>(
         // Add a special module entry for generated content
         stores
             .0
-            .add_module(crate::store::modules::StoreModule {
+            .add_module(StoreModule {
                 name: "__dotdeploy_generated".to_string(),
                 location: std::env::var("DOD_MODULES_ROOT")?,
                 user: Some(std::env::var("USER")?),
@@ -97,7 +148,7 @@ async fn generate_file<P: AsRef<Path>>(
         // Add the generated file to the store
         stores
             .0
-            .add_file(crate::store::files::StoreFile {
+            .add_file(StoreFile {
                 module: "__dotdeploy_generated".to_string(),
                 source: None,
                 source_checksum: None,
@@ -130,10 +181,10 @@ async fn generate_file<P: AsRef<Path>>(
 ///
 /// A Result indicating success or failure of the overall file generation process
 pub(crate) async fn generate_files(
-    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
-    generators: std::collections::BTreeMap<std::path::PathBuf, read_module::Generate>,
-    context: serde_json::Value,
-    hb: Arc<handlebars::Handlebars<'static>>,
+    stores: Arc<(Store, Option<Store>)>,
+    generators: BTreeMap<PathBuf, Generate>,
+    context: Value,
+    hb: Arc<Handlebars<'static>>,
 ) -> Result<()> {
     let mut set = tokio::task::JoinSet::new();
     let context = Arc::new(context);

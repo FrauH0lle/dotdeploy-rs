@@ -102,7 +102,7 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str>>(reason: S) -> Result<()> {
                 //   works most of the time.
                 //
                 // FIXME 2024-09-24: There should be a cleaner and better solution to this.
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
                 std::thread::spawn(move || sudo_loop(&sudo_cmd));
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
@@ -138,7 +138,7 @@ fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
     let status = Command::new(sudo.cmd())
         .args(sudo.initial_flags())
         .status()
-        .with_context(|| "Failed to execute sudo command")?;
+        .context("Failed to execute sudo command")?;
 
     if !status.success() {
         bail!("Sudo command failed");
@@ -169,7 +169,7 @@ fn update_sudo(sudo: &GetRootCmd) -> Result<()> {
     let status = Command::new(sudo.cmd())
         .args(sudo.keepalive_flags())
         .status()
-        .with_context(|| "Failed to execute sudo command")?;
+        .context("Failed to execute sudo command")?;
 
     if !status.success() {
         bail!("Sudo command failed");
