@@ -1,275 +1,20 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
+use crate::phases::destination::Destination;
+use crate::phases::file_operations::FileOperation;
 use crate::utils::file_fs;
 use crate::utils::file_checksum;
 use crate::utils::file_metadata;
 use crate::utils::file_permissions;
-use crate::utils::sudo;
+
+pub(crate) mod destination;
+pub(crate) mod file_operations;
 
 // Structs
-
-/// Represents the type of operation to be performed on the file.
-#[derive(Debug, Clone)]
-enum FileOperation {
-    /// Copy file from source to destination.
-    Copy {
-        source: PathBuf,
-        destination: Destination,
-        owner: Option<String>,
-        group: Option<String>,
-        permissions: Option<String>,
-        template: Option<bool>,
-    },
-    /// Link file from source to destination.
-    Symlink {
-        source: PathBuf,
-        destination: Destination,
-        owner: Option<String>,
-        group: Option<String>,
-    },
-    /// Create file with content at destination.
-    Create {
-        content: String,
-        destination: Destination,
-        owner: Option<String>,
-        group: Option<String>,
-        permissions: Option<String>,
-        template: Option<bool>,
-    },
-}
-
-impl FileOperation {
-    async fn run(&self) {
-        match self {
-            FileOperation::Copy {
-                source: _,
-                destination: _,
-                owner: _,
-                group: _,
-                permissions: _,
-                template: _,
-            } => {}
-            FileOperation::Symlink {
-                source: _,
-                destination: _,
-                owner: _,
-                group: _,
-            } => {}
-            FileOperation::Create {
-                content: _,
-                destination: _,
-                owner: _,
-                group: _,
-                permissions: _,
-                template: _,
-            } => {}
-        }
-    }
-}
-
-/// Represents the destination of the file operation, including whether sudo is required.
-#[derive(Debug, Clone)]
-enum Destination {
-    /// Copy/Link file to or create in the HOME folder. Should not require sudo.
-    Home(PathBuf),
-    /// Copy/Link file to or create in the ROOT folder. Should require sudo.
-    Root(PathBuf),
-}
-
-impl Destination {
-    fn path(&self) -> &PathBuf {
-        match self {
-            Destination::Home(path) => path,
-            Destination::Root(path) => path,
-        }
-    }
-
-    async fn copy<P: AsRef<Path>>(
-        &self,
-        source: P,
-        template: bool,
-        context: &serde_json::Value,
-        hb: &handlebars::Handlebars<'static>,
-    ) -> Result<()> {
-        match self {
-            Destination::Home(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                tokio::fs::create_dir_all(parent).await?;
-
-                // Remove file if already present
-                if file_fs::check_file_exists(dest).await? {
-                    file_fs::delete_file(dest).await?
-                }
-
-                if template {
-                    let file_content = tokio::fs::read_to_string(&source).await?;
-                    let rendered =
-                        hb.render_template(&file_content, &context)
-                            .with_context(|| {
-                                format!("Failed to render template {:?}", &source.as_ref())
-                            })?;
-                    tokio::fs::write(dest, rendered).await?;
-                } else {
-                    tokio::fs::copy(&source, dest).await.with_context(|| {
-                        format!("Failed to copy {:?} to {:?}", source.as_ref(), dest)
-                    })?;
-                }
-                Ok(())
-            }
-            Destination::Root(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
-                    .await?;
-
-                // Remove file if already present
-                if file_fs::check_file_exists(dest).await? {
-                    file_fs::delete_file(dest).await?
-                }
-
-                if template {
-                    let temp_file = tempfile::NamedTempFile::new()?;
-                    let file_content = tokio::fs::read_to_string(&source).await?;
-                    let rendered =
-                        hb.render_template(&file_content, &context)
-                            .with_context(|| {
-                                format!("Failed to render template {:?}", &source.as_ref())
-                            })?;
-                    tokio::fs::write(&temp_file, rendered).await?;
-
-                    sudo::sudo_exec(
-                        "cp",
-                        &[&file_fs::path_to_string(&temp_file)?,
-                            &file_fs::path_to_string(dest)?],
-                        Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
-                    )
-                    .await?;
-                } else {
-                    sudo::sudo_exec(
-                        "cp",
-                        &[&file_fs::path_to_string(&source)?,
-                            &file_fs::path_to_string(dest)?],
-                        Some(format!("Copy {:?} to {:?}", source.as_ref(), &dest).as_str()),
-                    )
-                    .await?;
-                }
-
-                Ok(())
-            }
-        }
-    }
-
-    async fn link<P: AsRef<Path>>(&self, source: P) -> Result<()> {
-        match self {
-            Destination::Home(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                tokio::fs::create_dir_all(parent).await?;
-                if file_fs::check_file_exists(dest).await? {
-                    file_fs::delete_file(dest).await?
-                }
-                tokio::fs::symlink(&source, dest).await.with_context(|| {
-                    format!("Failed to copy {:?} to {:?}", source.as_ref(), dest)
-                })?;
-                Ok(())
-            }
-            Destination::Root(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
-                    .await?;
-
-                sudo::sudo_exec(
-                    "ln",
-                    &["-sf",
-                        &file_fs::path_to_string(&source)?,
-                        &file_fs::path_to_string(dest)?],
-                    Some(format!("Link {:?} to {:?}", source.as_ref(), &dest).as_str()),
-                )
-                .await?;
-
-                Ok(())
-            }
-        }
-    }
-
-    async fn create<S: AsRef<str>>(
-        &self,
-        content: S,
-        template: bool,
-        context: &serde_json::Value,
-        hb: &handlebars::Handlebars<'static>,
-    ) -> Result<()> {
-        match self {
-            Destination::Home(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                tokio::fs::create_dir_all(parent).await?;
-                if template {
-                    tokio::fs::write(
-                        dest,
-                        hb.render_template(content.as_ref(), &context)
-                            .with_context(|| {
-                                format!("Failed to render template for {:?}", &dest)
-                            })?,
-                    )
-                    .await
-                    .with_context(|| format!("Failed to create {:?}", dest))?;
-                } else {
-                    tokio::fs::write(dest, content.as_ref())
-                        .await
-                        .with_context(|| format!("Failed to create {:?}", dest))?;
-                }
-                Ok(())
-            }
-            Destination::Root(dest) => {
-                let parent = dest
-                    .parent()
-                    .ok_or_else(|| anyhow!("Could not get parent of {:?}", dest))?;
-                sudo::sudo_exec("mkdir", &["-p", &file_fs::path_to_string(parent)?], None)
-                    .await?;
-
-                let temp_file = tempfile::NamedTempFile::new()?;
-
-                if template {
-                    tokio::fs::write(
-                        &temp_file,
-                        hb.render_template(content.as_ref(), &context)
-                            .with_context(|| {
-                                format!("Failed to render template for {:?}", &temp_file)
-                            })?,
-                    )
-                    .await
-                    .with_context(|| format!("Failed to create {:?}", &temp_file))?;
-                } else {
-                    tokio::fs::write(&temp_file, content.as_ref())
-                        .await
-                        .with_context(|| format!("Failed to create {:?}", &temp_file))?;
-                }
-
-                sudo::sudo_exec(
-                    "cp",
-                    &[&file_fs::path_to_string(&temp_file)?,
-                        &file_fs::path_to_string(dest)?],
-                    None,
-                )
-                .await?;
-
-                Ok(())
-            }
-        }
-    }
-}
 
 /// A structure to manage file configurations, including the operation, source and destination.
 #[derive(Debug, Clone)]
@@ -365,7 +110,7 @@ impl ManagedFile {
                     debug!("Trying to copy {:?} to {:?}", source, destination.path());
 
                     destination
-                        .copy(source, template.unwrap(), context, hb)
+                        .copy(source, *template, context, hb)
                         .await
                         .with_context(|| {
                             format!("Failed to copy {:?} to {:?}", source, destination.path())
@@ -526,7 +271,7 @@ impl ManagedFile {
                 }
 
                 destination
-                    .create(content, template.unwrap(), context, hb)
+                    .create(content, *template, context, hb)
                     .await?;
 
                 file_metadata::set_file_metadata(
@@ -1039,3 +784,25 @@ fn append_packages(
 
     Ok(())
 }
+
+// // maybe rename to task?
+// enum Phase {
+//     Setup(Phase),
+//     Deploy(Phase),
+//     Config(Phase)
+// }
+
+// struct Phase {
+//     pre_stage: Stage,
+//     main_stage: Stage,
+//     post_stag: Stagee
+// }
+
+// struct Stage {
+//     // file operations
+//     files: ...,
+//     // packages to install (only for main stage, deploy phase)
+//     packages: ...,
+//     // code/programm executions
+//     actions: ...,
+// }
