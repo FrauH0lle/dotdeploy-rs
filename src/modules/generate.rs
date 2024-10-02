@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::modules::conditional::Conditional;
+use crate::store::Stores;
 use crate::store::db::Store;
 use crate::store::files::StoreFile;
 use crate::store::modules::StoreModule;
@@ -80,7 +81,7 @@ impl Conditional for Generate {
 ///
 /// A Result indicating success or failure of the file generation process
 async fn generate_file<P: AsRef<Path>>(
-    stores: Arc<(Store, Option<Store>)>,
+    stores: Arc<Stores>,
     target: P,
     generator: &Generate,
     context: &Value,
@@ -88,7 +89,7 @@ async fn generate_file<P: AsRef<Path>>(
 ) -> Result<()> {
     // Retrieve all modules from the store
     let modules = stores
-        .0
+        .user_store
         .get_all_modules()
         .await
         .map_err(|e| e.into_anyhow())?;
@@ -133,7 +134,7 @@ async fn generate_file<P: AsRef<Path>>(
 
         // Add a special module entry for generated content
         stores
-            .0
+            .user_store
             .add_module(StoreModule {
                 name: "__dotdeploy_generated".to_string(),
                 location: std::env::var("DOD_MODULES_ROOT")?,
@@ -147,7 +148,7 @@ async fn generate_file<P: AsRef<Path>>(
 
         // Add the generated file to the store
         stores
-            .0
+            .user_store
             .add_file(StoreFile {
                 module: "__dotdeploy_generated".to_string(),
                 source: None,
@@ -181,7 +182,7 @@ async fn generate_file<P: AsRef<Path>>(
 ///
 /// A Result indicating success or failure of the overall file generation process
 pub(crate) async fn generate_files(
-    stores: Arc<(Store, Option<Store>)>,
+    stores: Arc<Stores>,
     generators: BTreeMap<PathBuf, Generate>,
     context: Value,
     hb: Arc<Handlebars<'static>>,
@@ -191,7 +192,7 @@ pub(crate) async fn generate_files(
 
     // Clean up previously generated files
     let prev_files = stores
-        .0
+        .user_store
         .get_all_files("__dotdeploy_generated")
         .await
         .map_err(|e| e.into_anyhow())?;
@@ -203,7 +204,7 @@ pub(crate) async fn generate_files(
 
     // Remove the special generated module from the store
     stores
-        .0
+        .user_store
         .remove_module("__dotdeploy_generated")
         .await
         .map_err(|e| e.into_anyhow())?;

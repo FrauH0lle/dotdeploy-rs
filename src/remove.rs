@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
+use crate::Stores;
 use crate::utils::file_fs;
 
 /// Removes a file and restores its backup if available.
@@ -22,7 +23,7 @@ use crate::utils::file_fs;
 /// A Result indicating success or failure of the file removal and backup restoration process
 async fn remove_file<S: AsRef<str>>(
     file: S,
-    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
+    stores: Arc<Stores>,
 ) -> Result<()> {
     if file_fs::check_file_exists(file.as_ref()).await? {
         // Delete the file
@@ -31,19 +32,19 @@ async fn remove_file<S: AsRef<str>>(
 
         // Check for and restore backup from the user store
         if stores
-            .0
+            .user_store
             .check_backup_exists(file.as_ref())
             .await
             .map_err(|e| e.into_anyhow())?
         {
             stores
-                .0
+                .user_store
                 .restore_backup(file.as_ref(), file.as_ref())
                 .await
                 .map_err(|e| e.into_anyhow())?;
             // TODO: Implement backup validation
             stores
-                .0
+                .user_store
                 .remove_backup(file.as_ref())
                 .await
                 .map_err(|e| e.into_anyhow())?;
@@ -52,7 +53,7 @@ async fn remove_file<S: AsRef<str>>(
         }
 
         // Check for and restore backup from the system store (if it exists)
-        if let Some(sys_store) = &stores.1 {
+        if let Some(sys_store) = &stores.system_store {
             if sys_store
                 .check_backup_exists(file.as_ref())
                 .await
@@ -92,7 +93,7 @@ async fn remove_file<S: AsRef<str>>(
 /// A Result indicating success or failure of the overall removal process
 pub(crate) async fn remove(
     mut phases: BTreeMap<String, crate::phases::Phase>,
-    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
+    stores: Arc<Stores>,
     files: Vec<crate::store::files::StoreFile>,
     dotdeploy_config: &crate::config::DotdeployConfig,
 ) -> Result<()> {

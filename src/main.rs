@@ -19,6 +19,8 @@ mod remove;
 mod store;
 mod utils;
 
+use store::Stores;
+
 lazy_static! {
     /// Global variable, available to all threads, indicating if the system store can be used.
     pub(crate) static ref DEPLOY_SYSTEM_FILES: AtomicBool = AtomicBool::new(false);
@@ -135,6 +137,9 @@ async fn run() -> Result<bool> {
     let mut generators: std::collections::BTreeMap<std::path::PathBuf, crate::modules::generate::Generate> =
         std::collections::BTreeMap::new();
 
+    // Initialize stores
+    let stores = Arc::new(Stores::init().await.context("Failed to initialize stores")?);
+
     match &cli.command {
         cli::Commands::Deploy { modules } => match modules {
             None => {
@@ -148,24 +153,6 @@ async fn run() -> Result<bool> {
 
                 trace!("Context values: {:#?}", &module_queue.context);
 
-                // Initialize stores
-                let stores = Arc::new((
-                    crate::store::init::init_user_store(None)
-                        .await
-                        .map_err(|e| e.into_anyhow())
-                        .context("Failed to initialize user store")?,
-                    if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
-                        Some(
-                            crate::store::init::init_system_store()
-                                .await
-                                .map_err(|e| e.into_anyhow())
-                                .context("Failed to initialize system store")?,
-                        )
-                    } else {
-                        None
-                    },
-                ));
-
                 // Add modules to stores
                 for module in module_queue.modules.iter() {
                     let m = crate::store::modules::StoreModule {
@@ -178,12 +165,12 @@ async fn run() -> Result<bool> {
                     };
                     // User store
                     stores
-                        .0
+                        .user_store
                         .add_module(m.clone())
                         .await
                         .map_err(|e| e.into_anyhow())?;
                     // System store
-                    if let Some(ref sys_store) = stores.1 {
+                    if let Some(ref sys_store) = stores.system_store {
                         sys_store.add_module(m).await.map_err(|e| e.into_anyhow())?;
                     }
                 }
@@ -217,11 +204,11 @@ async fn run() -> Result<bool> {
                 .await?;
 
                 // Close pools and save their location
-                let user_store_path = stores.0.path.clone();
+                let user_store_path = stores.user_store.path.clone();
                 let mut sys_store_path = std::path::PathBuf::new();
 
-                stores.0.close().await.map_err(|e| e.into_anyhow())?;
-                if let Some(sys_store) = &stores.1 {
+                stores.user_store.close().await.map_err(|e| e.into_anyhow())?;
+                if let Some(sys_store) = &stores.system_store {
                     sys_store_path.push(sys_store.path.clone());
                     sys_store.close().await.map_err(|e| e.into_anyhow())?;
                 }
@@ -256,21 +243,6 @@ async fn run() -> Result<bool> {
                 Ok(true)
             }
             Some(modules) => {
-                // Initialize stores
-                let stores = Arc::new((
-                    crate::store::init::init_user_store(None)
-                        .await
-                        .map_err(|e| e.into_anyhow())?,
-                    if DEPLOY_SYSTEM_FILES.load(Ordering::Relaxed) {
-                        Some(
-                            crate::store::init::init_system_store()
-                                .await
-                                .map_err(|e| e.into_anyhow())?,
-                        )
-                    } else {
-                        None
-                    },
-                ));
 
                 // let mut modules = vec![["hosts/", &dotdeploy_config.hostname.unwrap()].join("")];
                 let module_configs = std::collections::BTreeSet::new();
@@ -286,7 +258,7 @@ async fn run() -> Result<bool> {
 
                 for module in modules.iter() {
                     let user_files = stores
-                        .0
+                        .user_store
                         .get_all_files(&module)
                         .await
                         .map_err(|e| e.into_anyhow())
@@ -300,7 +272,7 @@ async fn run() -> Result<bool> {
                         files.push(f);
                     }
 
-                    if let Some(sys_store) = &stores.1 {
+                    if let Some(sys_store) = &stores.system_store {
                         let sys_files = sys_store
                             .get_all_files(&module)
                             .await
@@ -333,11 +305,11 @@ async fn run() -> Result<bool> {
                 // Remove modules from the stores
                 for module in modules.iter() {
                     stores
-                        .0
+                        .user_store
                         .remove_module(module)
                         .await
                         .map_err(|e| e.into_anyhow())?;
-                    if let Some(sys_store) = &stores.1 {
+                    if let Some(sys_store) = &stores.system_store {
                         sys_store
                             .remove_module(module)
                             .await
@@ -355,11 +327,11 @@ async fn run() -> Result<bool> {
                 .await?;
 
                 // Close pools and save their location
-                let user_store_path = stores.0.path.clone();
+                let user_store_path = stores.user_store.path.clone();
                 let mut sys_store_path = std::path::PathBuf::new();
 
-                stores.0.close().await.map_err(|e| e.into_anyhow())?;
-                if let Some(sys_store) = &stores.1 {
+                stores.user_store.close().await.map_err(|e| e.into_anyhow())?;
+                if let Some(sys_store) = &stores.system_store {
                     sys_store_path.push(sys_store.path.clone());
                     sys_store.close().await.map_err(|e| e.into_anyhow())?;
                 }

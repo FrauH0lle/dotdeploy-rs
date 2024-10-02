@@ -5,6 +5,8 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
+use crate::Stores;
+
 /// Executes the deployment process, including setup, deployment, and configuration phases.
 ///
 /// This function iterates through predefined phases, executing actions, handling file operations,
@@ -23,7 +25,7 @@ use std::sync::Arc;
 /// A Result indicating success or failure of the overall deployment process
 pub(crate) async fn deploy(
     mut phases: BTreeMap<String, crate::phases::Phase>,
-    stores: Arc<(crate::store::db::Store, Option<crate::store::db::Store>)>,
+    stores: Arc<(Stores)>,
     context: serde_json::Value,
     hb: Arc<handlebars::Handlebars<'static>>,
     dotdeploy_config: &crate::config::DotdeployConfig,
