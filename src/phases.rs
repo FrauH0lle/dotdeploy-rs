@@ -4,314 +4,15 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
+use crate::store::Stores;
 use crate::phases::destination::Destination;
-use crate::phases::file_operations::FileOperation;
+use crate::phases::file_operations::{FileOperation, ManagedFile};
 use crate::utils::file_fs;
-use crate::utils::file_checksum;
-use crate::utils::file_metadata;
-use crate::utils::file_permissions;
 
 pub(crate) mod destination;
 pub(crate) mod file_operations;
 
 // Structs
-
-/// A structure to manage file configurations, including the operation, source and destination.
-#[derive(Debug, Clone)]
-pub(crate) struct ManagedFile {
-    /// Module the file belongs to
-    pub(crate) module: String,
-    /// Which [FileOperation] to apply.
-    pub(crate) operation: FileOperation,
-}
-
-impl ManagedFile {
-    pub(crate) async fn perform(
-        &self,
-        stores: &(crate::store::db::Store, Option<crate::store::db::Store>),
-        context: &serde_json::Value,
-        hb: &handlebars::Handlebars<'static>,
-    ) -> Result<()> {
-        match &self.operation {
-            FileOperation::Copy {
-                source,
-                destination,
-                owner,
-                group,
-                permissions,
-                template,
-            } => {
-                let store = match destination {
-                    Destination::Home(_) => &stores.0,
-                    Destination::Root(_) => {
-                        stores.1.as_ref().expect("System store should not be empty")
-                    }
-                };
-
-                // Perform copy operation
-
-                // Copy when
-                // - source has changed
-                // - file not found in DB
-
-                let mut do_copy = false;
-
-                if template.expect("template should always be Some()") {
-                    // Always copy the file if it is a template, no further checks
-                    do_copy = true;
-                } else {
-                    // Check if source has changed
-                    if let Some(db_src_checksum) = store
-                        .get_source_checksum(destination.path())
-                        .await
-                        .map_err(|e| e.into_anyhow())
-                        .with_context(|| {
-                            format!(
-                                "Failed to get source checksum for {:?} from store",
-                                &destination.path()
-                            )
-                        })?
-                    {
-                        let src_checksum = file_checksum::calculate_sha256_checksum(&db_src_checksum.0)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "Failed to get source checksum for {:?}",
-                                    &db_src_checksum.0
-                                )
-                            })?;
-                        if src_checksum != db_src_checksum.1 {
-                            info!("'{}' has changed, re-deplyoing", &db_src_checksum.0);
-                            do_copy = true;
-                        }
-                    } else {
-                        info!(
-                            "'{}' not found in store, deplyoing",
-                            destination.path().display()
-                        );
-                        do_copy = true;
-                    }
-                }
-
-                if do_copy {
-                    // Create backup if no backup is already stored and if the destination file
-                    // already exists
-                    if !store
-                        .check_backup_exists(destination.path())
-                        .await
-                        .map_err(|e| e.into_anyhow())?
-                        & file_fs::check_file_exists(destination.path()).await?
-                    {
-                        store
-                            .add_backup(destination.path())
-                            .await
-                            .map_err(|e| e.into_anyhow())?;
-                    }
-                    debug!("Trying to copy {:?} to {:?}", source, destination.path());
-
-                    destination
-                        .copy(source, *template, context, hb)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to copy {:?} to {:?}", source, destination.path())
-                        })?;
-
-                    // Set permissions
-                    file_metadata::set_file_metadata(
-                        destination.path(),
-                        file_metadata::FileMetadata {
-                            uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
-                            gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
-                            permissions: permissions
-                                .as_ref()
-                                .map(file_permissions::perms_str_to_int)
-                                .transpose()?,
-                            is_symlink: false,
-                            symlink_source: None,
-                            checksum: None,
-                        },
-                    )
-                    .await?;
-
-                    // Record file in store
-                    store
-                        .add_file(crate::store::files::StoreFile {
-                            module: self.module.clone(),
-                            source: Some(source.display().to_string()),
-                            source_checksum: Some(file_checksum::calculate_sha256_checksum(source).await?),
-                            destination: destination.path().display().to_string(),
-                            destination_checksum: Some(
-                                file_checksum::calculate_sha256_checksum(destination.path()).await?,
-                            ),
-                            operation: "copy".to_string(),
-                            user: Some(std::env::var("USER")?),
-                            date: chrono::offset::Local::now(),
-                        })
-                        .await
-                        .map_err(|e| e.into_anyhow())?;
-
-                    info!(
-                        "Copy: '{}' -> '{}'",
-                        source.display(),
-                        destination.path().display()
-                    );
-                } else {
-                    info!("'{}' deployed and up to date", destination.path().display());
-                }
-            }
-            FileOperation::Symlink {
-                source,
-                destination,
-                owner,
-                group,
-            } => {
-                let store = match destination {
-                    Destination::Home(_) => &stores.0,
-                    Destination::Root(_) => {
-                        stores.1.as_ref().expect("System store should not be empty")
-                    }
-                };
-
-                // Perform symlink operation
-                if file_fs::check_file_exists(destination.path()).await?
-                    && file_fs::check_link_exists(destination.path(), Some(source)).await?
-                    && store
-                        .check_file_exists(destination.path())
-                        .await
-                        .map_err(|e| e.into_anyhow())?
-                {
-                    info!("'{}' deployed and up to date", destination.path().display());
-                } else {
-                    if !store
-                        .check_backup_exists(destination.path())
-                        .await
-                        .map_err(|e| e.into_anyhow())?
-                        & file_fs::check_file_exists(destination.path()).await?
-                    {
-                        store
-                            .add_backup(destination.path())
-                            .await
-                            .map_err(|e| e.into_anyhow())?;
-                    }
-
-                    debug!("Trying to link {:?} to {:?}", source, destination.path());
-
-                    destination
-                        .link(source.to_path_buf())
-                        .await
-                        .with_context(|| {
-                            format!("Failed to link {:?} to {:?}", source, destination.path())
-                        })?;
-
-                    // Set permissions
-                    file_metadata::set_file_metadata(
-                        destination.path(),
-                        file_metadata::FileMetadata {
-                            uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
-                            gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
-                            permissions: None,
-                            is_symlink: true,
-                            symlink_source: None,
-                            checksum: None,
-                        },
-                    )
-                    .await?;
-
-                    store
-                        .add_file(crate::store::files::StoreFile {
-                            module: self.module.clone(),
-                            source: Some(source.display().to_string()),
-                            source_checksum: Some(file_checksum::calculate_sha256_checksum(source).await?),
-                            destination: destination.path().display().to_string(),
-                            destination_checksum: None,
-                            operation: "link".to_string(),
-                            user: Some(std::env::var("USER")?),
-                            date: chrono::offset::Local::now(),
-                        })
-                        .await
-                        .map_err(|e| e.into_anyhow())?;
-
-                    info!(
-                        "Link: '{}' -> '{}'",
-                        source.display(),
-                        destination.path().display()
-                    );
-                }
-            }
-            FileOperation::Create {
-                content,
-                destination,
-                owner,
-                group,
-                permissions,
-                template,
-            } => {
-                let store = match destination {
-                    Destination::Home(_) => &stores.0,
-                    Destination::Root(_) => {
-                        stores.1.as_ref().expect("System store should not be empty")
-                    }
-                };
-                // Perform create operation
-                debug!(
-                    "Trying to create {:?} with specified content",
-                    destination.path()
-                );
-
-                if !store
-                    .check_backup_exists(destination.path())
-                    .await
-                    .map_err(|e| e.into_anyhow())?
-                    & file_fs::check_file_exists(destination.path()).await?
-                {
-                    store
-                        .add_backup(destination.path())
-                        .await
-                        .map_err(|e| e.into_anyhow())?;
-                }
-
-                destination
-                    .create(content, *template, context, hb)
-                    .await?;
-
-                file_metadata::set_file_metadata(
-                    destination.path(),
-                    file_metadata::FileMetadata {
-                        uid: owner.as_ref().map(file_permissions::user_to_uid).transpose()?,
-                        gid: group.as_ref().map(file_permissions::group_to_gid).transpose()?,
-                        permissions: permissions
-                            .as_ref()
-                            .map(file_permissions::perms_str_to_int)
-                            .transpose()?,
-                        is_symlink: false,
-                        symlink_source: None,
-                        checksum: None,
-                    },
-                )
-                .await?;
-
-                store
-                    .add_file(crate::store::files::StoreFile {
-                        module: self.module.clone(),
-                        source: None,
-                        source_checksum: None,
-                        destination: destination.path().display().to_string(),
-                        destination_checksum: Some(
-                            file_checksum::calculate_sha256_checksum(destination.path()).await?,
-                        ),
-                        operation: "create".to_string(),
-                        user: Some(std::env::var("USER")?),
-                        date: chrono::offset::Local::now(),
-                    })
-                    .await
-                    .map_err(|e| e.into_anyhow())?;
-
-                info!("Create: '{}'", destination.path().display());
-            }
-        };
-        Ok(())
-    }
-}
 
 /// Represents a processing phase like Setup, Deployment or Configuration.
 #[derive(Debug)]
@@ -341,7 +42,7 @@ pub(crate) struct Phase {
 pub(crate) async fn assign_module_config(
     modules: std::collections::BTreeSet<crate::modules::Module>,
     context: serde_json::Value,
-    stores: &(crate::store::db::Store, Option<crate::store::db::Store>),
+    stores: &Stores,
     messages: &mut (
         std::collections::BTreeMap<String, Vec<String>>,
         std::collections::BTreeMap<String, Vec<String>>,
@@ -435,7 +136,7 @@ pub(crate) async fn assign_module_config(
         // Retrieve deployed files in order to check if their status is still valid. Thus, if a source
         // does not exist or it is not part of the config anymore, remove the destination.
         let mut user_files: HashMap<String, (Option<String>, String)> = stores
-            .0
+            .user_store
             .get_all_files(&module_name)
             .await
             .map_err(|e| e.into_anyhow())?
@@ -443,7 +144,7 @@ pub(crate) async fn assign_module_config(
             .map(|f| (f.destination, (f.source, f.operation)))
             .collect();
         let mut sys_files: HashMap<String, (Option<String>, String)> =
-            if let Some(ref sys_store) = stores.1 {
+            if let Some(ref sys_store) = stores.system_store {
                 sys_store
                     .get_all_files(&module_name)
                     .await
@@ -481,7 +182,7 @@ pub(crate) async fn assign_module_config(
                 module_name, k
             );
             stores
-                .0
+                .user_store
                 .remove_file(&k)
                 .await
                 .map_err(|e| e.into_anyhow())?;
@@ -492,20 +193,20 @@ pub(crate) async fn assign_module_config(
 
             // Restore backup
             if stores
-                .0
+                .user_store
                 .check_backup_exists(&k)
                 .await
                 .map_err(|e| e.into_anyhow())?
             {
                 stores
-                    .0
+                    .user_store
                     .restore_backup(&k, &k)
                     .await
                     .map_err(|e| e.into_anyhow())?;
                 // TODO validate restored backup
                 // Remove backup from store
                 stores
-                    .0
+                    .user_store
                     .remove_backup(&k)
                     .await
                     .map_err(|e| e.into_anyhow())?;
@@ -520,7 +221,7 @@ pub(crate) async fn assign_module_config(
             );
 
             stores
-                .1
+                .system_store
                 .as_ref()
                 .unwrap()
                 .remove_file(&k)
@@ -533,7 +234,7 @@ pub(crate) async fn assign_module_config(
 
             // Restore backup
             if stores
-                .1
+                .system_store
                 .as_ref()
                 .unwrap()
                 .check_backup_exists(&k)
@@ -541,7 +242,7 @@ pub(crate) async fn assign_module_config(
                 .map_err(|e| e.into_anyhow())?
             {
                 stores
-                    .1
+                    .system_store
                     .as_ref()
                     .unwrap()
                     .restore_backup(&k, &k)
@@ -550,7 +251,7 @@ pub(crate) async fn assign_module_config(
                 // TODO validate restored backup
                 // Remove backup from store
                 stores
-                    .1
+                    .system_store
                     .as_ref()
                     .unwrap()
                     .remove_backup(&k)
