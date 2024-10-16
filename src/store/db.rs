@@ -7,12 +7,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use deadpool_sqlite::{Config, Runtime};
 
 use crate::store::errors::SQLiteError;
+use crate::store::Store;
 use crate::utils::file_fs;
 use crate::utils::sudo;
 
 /// Representation of the store database
 #[derive(Clone, Debug)]
-pub(crate) struct Store {
+pub(crate) struct SQLiteStore {
     /// SQLite connection pool
     pub(crate) pool: Option<deadpool_sqlite::Pool>,
     /// Store location
@@ -63,8 +64,8 @@ pub(crate) fn close_connection<P: AsRef<Path>>(path: P) -> Result<()> {
             .context("Failed to run PRAGMA synchronous=NORMAL")?;
 
             // Run VACUUM to optimize the database
-            conn.execute_batch("VACUUM;;")
-                .context("Failed to run VACUUM;")?;
+            conn.execute_batch("VACUUM;")
+                .context("Failed to run VACUUM")?;
 
             // Close the connection and wait a bit before checking again
             drop(conn);
@@ -105,7 +106,7 @@ pub(crate) fn prepare_connection(
     Ok(())
 }
 
-impl Store {
+impl SQLiteStore {
     /// Creates a new Store configuration but does not initialize the connection pool yet.
     ///
     /// # Arguments
@@ -115,132 +116,12 @@ impl Store {
     ///
     /// # Returns
     /// A new `Store` instance with the specified path and system flag.
-    pub(crate) fn new(path: PathBuf, system: bool) -> Self {
-        Store {
+    fn new(path: PathBuf, system: bool) -> Self {
+        SQLiteStore {
             pool: None,
             path,
             system,
         }
-    }
-
-    /// Creates the directory for the store if it doesn't exist.
-    ///
-    /// For system stores, this method uses sudo to create the directory and set appropriate
-    /// permissions. For user stores, it creates the directory without elevated permissions.
-    ///
-    /// # Returns
-    /// * `Ok(())` if the directory is successfully created or already exists.
-    /// * `Err(anyhow::Error)` if an error occurs during directory creation.
-    async fn create_dir(&self) -> Result<()> {
-        if self.system {
-            self.create_system_dir().await
-        } else {
-            self.create_user_dir().await
-        }
-    }
-
-    /// Creates the directory for a system-wide store.
-    async fn create_system_dir(&self) -> Result<()> {
-        match self.path.try_exists() {
-            Ok(false) => {
-                debug!(
-                    "Store directory '{}' does not exist, creating.",
-                    &self.path.display()
-                );
-
-                // Create the directory with sudo
-                file_fs::ensure_dir_exists(&self.path)
-                    .await
-                    .with_context(|| format!("Failed to create directory {:?}", &self.path))?;
-
-                // Set permissions to allow all users to write to the directory
-                sudo::sudo_exec(
-                    "chmod",
-                    &["777", file_fs::path_to_string(&self.path)?.as_str()],
-                    Some("Adjusting permissions of system store DB directory"),
-                )
-                .await
-                .with_context(|| {
-                    format!("Failed to change permissions of directory {:?}", &self.path)
-                })?;
-
-                Ok(())
-            }
-            Ok(true) => {
-                debug!(
-                    "Store directory '{}' exists already, continuing.",
-                    &self.path.display()
-                );
-                Ok(())
-            }
-            Err(e) => bail!("{}", e),
-        }
-    }
-
-    /// Creates the directory for a user-specific store.
-    async fn create_user_dir(&self) -> Result<()> {
-        match self.path.try_exists() {
-            Ok(false) => {
-                debug!(
-                    "Store directory '{}' does not exist, creating.",
-                    &self.path.display()
-                );
-                file_fs::ensure_dir_exists(&self.path)
-                    .await
-                    .with_context(|| format!("Failed to create directory {:?}", &self.path))?;
-                Ok(())
-            }
-            Ok(true) => {
-                debug!(
-                    "Store directory '{}' exists already, continuing.",
-                    &self.path.display()
-                );
-                Ok(())
-            }
-            Err(e) => bail!("{}", e),
-        }
-    }
-
-    /// Initializes a store database.
-    ///
-    /// This method creates the necessary directory, initializes the SQLite database, creates the
-    /// required tables, and sets up the connection pool.
-    ///
-    /// # Returns
-    /// * `Ok(())` if the initialization is successful.
-    /// * `Err(SQLiteError)` if an error occurs during initialization.
-    pub(crate) async fn init(&mut self) -> Result<(), SQLiteError> {
-        // Create the directory if it doesn't exist
-        self.create_dir().await.map_err(SQLiteError::Other)?;
-
-        // Set the full path for the SQLite database file
-        self.path = self.path.join("store.sqlite");
-
-        // Create the connection pool
-        let pool = Config::new(&self.path)
-            .create_pool(Runtime::Tokio1)
-            .with_context(|| {
-                format!("Failed to create pool for store database {:?}", &self.path)
-            })?;
-
-        let conn = pool
-            .get()
-            .await
-            .with_context(|| format!("Failed to connect to store database {:?}", &self.path))?;
-
-        // Initialize the database with optimal settings
-        conn.interact(move |conn| -> Result<(), SQLiteError> {
-            prepare_connection(conn)?;
-            Ok(())
-        })
-        .await??;
-
-        // Create the necessary tables
-        self.create_tables(&conn).await?;
-
-        // Store the initialized pool
-        self.pool = Some(pool);
-        Ok(())
     }
 
     /// Creates the necessary tables in the SQLite database.
@@ -356,5 +237,87 @@ impl Store {
         } else {
             Err(anyhow!("Store database not initialized!").into())
         }
+    }
+}
+
+impl Store for SQLiteStore {
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    fn is_system(&self) -> bool {
+        self.system
+    }
+
+    async fn init(&mut self) -> Result<()> {
+        // Create the directory if it doesn't exist
+        self.create_dir().await?;
+
+        // Set the full path for the SQLite database file
+        self.path = self.path.join("store.sqlite");
+
+        // Create the connection pool
+        let pool = Config::new(&self.path)
+            .create_pool(Runtime::Tokio1)
+            .with_context(|| {
+                format!("Failed to create pool for store database {:?}", &self.path)
+            })?;
+
+        let conn = pool
+            .get()
+            .await
+            .with_context(|| format!("Failed to connect to store database {:?}", &self.path))?;
+
+        // Initialize the database with optimal settings
+        conn.interact(move |conn| -> Result<(), SQLiteError>> {
+            prepare_connection(conn).map_err(|e| e.into_anyhow())?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.into_anyhow())??;
+
+        // Create the necessary tables
+        self.create_tables(&conn)
+            .await
+            .map_err(|e| e.into_anyhow())?;
+
+        // Store the initialized pool
+        self.pool = Some(pool);
+        Ok(())
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // File operations
+    ////////////////////////////////////////////////////////////////////////////////
+
+    async fn get_file<P: AsRef<Path>>(
+        &self,
+        filename: P,
+    ) -> Result<StoreFile, SQLiteError> {
+        let filename_str = file_fs::path_to_string(filename)?;
+
+        let conn = &self.get_con().await?;
+
+        conn.interact(move |conn| -> Result<StoreFile, SQLiteError> {
+            db::prepare_connection(conn)?;
+            let mut stmt = conn.prepare(
+                "SELECT files.id, files.source, files.source_checksum, files.destination, files.destination_checksum, files.operation, files.user, files.date, modules.name AS module
+                 FROM files
+                 INNER JOIN modules ON files.module_id = modules.id
+                 WHERE files.destination = $1")?;
+
+            Ok(stmt.query_row(params![filename_str], |row| {
+                Ok(StoreFile {
+                    module: row.get(8)?,
+                    source: row.get(1)?,
+                    source_checksum: row.get(2)?,
+                    destination: row.get(3)?,
+                    destination_checksum: row.get(4)?,
+                    operation: row.get(5)?,
+                    user: row.get(6)?,
+                    date: row.get(7)?,
+                })
+            })?)
+        }).await?
     }
 }
