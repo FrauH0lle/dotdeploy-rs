@@ -1,58 +1,115 @@
-//! This module defines the command-line interface (CLI) structure for the application, using the
-//! clap crate for parsing and handling command-line arguments.
+//! This module defines the command-line interface (CLI) structure for the
+//! application, using the clap crate for parsing and handling command-line
+//! arguments.
 
 use clap::{Parser, Subcommand};
 
-// Represents the main command-line interface structure.
-// This struct defines the overall CLI, including global options and subcommands.
-/// dotdeploy -- System configuraton and dotfile manager
+/// Root command for the dotdeploy application
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about = "Dotdeploy - System configuration and dotfile manager"
+)]
 pub(crate) struct Cli {
-    /// The subcommand to be executed (Deploy or Remove).
+    /// The subcommand to execute
     #[command(subcommand)]
     pub(crate) command: Commands,
 
-    /// Verbosity level for output.
-    ///
-    /// Can be specified up to 2 times (-v or -vv) to increase detail.
-    #[clap(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
-    pub(crate) verbosity: u8,
+    /// Show what would happen without making changes
+    #[clap(long, short, action, global = true)]
+    pub(crate) dry_run: bool,
 
-    /// Flag to skip package installation during deployment.
-    #[clap(long, short, action)]
+    /// Skip confirmations for destructive operations
+    #[clap(long, short, action, global = true)]
+    pub(crate) force: bool,
+
+    /// Skip package installation during deployment
+    #[clap(long, short, action, global = true)]
     pub(crate) skip_pkg_install: bool,
+
+    /// Verbosity level (-v = debug, -vv = trace)
+    #[clap(
+        short,
+        long,
+        action = clap::ArgAction::Count,
+        global = true
+    )]
+    pub(crate) verbosity: u8,
 }
 
-/// Enumerates the available subcommands for the application.
+/// Available subcommands for dotdeploy
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Deploy system configuration or specific modules.
+    /// Deploy system configuration or specific modules
     Deploy {
-        /// Optional list of module names to deploy.
+        /// Optional list of module names to deploy
         modules: Option<Vec<String>>,
     },
 
-    /// Remove system configuration or specific modules.
+    /// Remove deployed modules and restore backups
     Remove {
-        /// Optional list of module names to remove.
+        /// Optional list of module names to remove
         modules: Option<Vec<String>>,
+    },
+
+    /// Update module content and optionally installed packages
+    Update {
+        /// Also update installed packages
+        #[clap(long, short)]
+        packages: bool,
+    },
+
+    /// Synchronize deployed files with their sources
+    Sync {
+        /// Automatically sync without asking
+        #[clap(long)]
+        auto: bool,
+    },
+
+    /// Validate deployment state and check for differences
+    Validate {
+        /// Show detailed differences between source and deployed files
+        #[clap(long)]
+        diff: bool,
+
+        /// Enter interactive fix mode for discrepancies
+        #[clap(long)]
+        fix: bool,
+    },
+
+    /// Complete uninstall of dotdeploy configuration
+    Nuke {
+        /// Skip safety confirmations
+        #[clap(long)]
+        really: bool,
     },
 }
 
 /// Parses command-line arguments and returns a configured Cli instance.
 ///
-/// This function handles the parsing of arguments and applies any necessary post-processing, such
-/// as capping the verbosity level.
+/// This function handles argument parsing and applies any necessary
+/// post-processing, such as capping the verbosity level at 2 (-vv maximum).
 ///
 /// # Returns
 ///
-/// A Cli struct representing the parsed command-line arguments.
+/// Returns the parsed and processed CLI configuration.
 pub(crate) fn get_cli() -> Cli {
     let mut cli = Cli::parse();
 
-    // Cap the verbosity level at 2
-    cli.verbosity = std::cmp::min(2, cli.verbosity);
+    // Cap verbosity at level 2 (trace)
+    cli.verbosity = cli.verbosity.min(2);
 
     cli
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
 }
