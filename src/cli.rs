@@ -2,7 +2,9 @@
 //! application, using the clap crate for parsing and handling command-line
 //! arguments.
 
+
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Root command for the dotdeploy application
 #[derive(Parser)]
@@ -17,16 +19,56 @@ pub(crate) struct Cli {
     pub(crate) command: Commands,
 
     /// Show what would happen without making changes
-    #[clap(long, short, action, global = true)]
+    #[clap(long, short, action, global = true, env = "DOD_DRY_RUN")]
     pub(crate) dry_run: bool,
 
     /// Skip confirmations for destructive operations
-    #[clap(long, short, action, global = true)]
+    #[clap(long, short, action, global = true, env = "DOD_FORCE")]
     pub(crate) force: bool,
 
+    /// Root folder of dotfiles
+    #[clap(long, action, global = true, env = "DOD_CONFIG_ROOT")]
+    pub(crate) config_root: Option<PathBuf>,
+
+    /// Root folder of Dotedeploy modules
+    #[clap(long, action, global = true, env = "DOD_MODULES_ROOT")]
+    pub(crate) modules_root: Option<PathBuf>,
+
+    /// Root folder of Dotedeploy hosts
+    #[clap(long, action, global = true, env = "DOD_HOSTS_ROOT")]
+    pub(crate) hosts_root:  Option<PathBuf>,
+
+    /// Host device's hostname
+    #[clap(long, action, global = true, env = "DOD_HOSTNAME")]
+    pub(crate) hostname: Option<String>,
+
+    /// Host device's Linux distribution
+    #[clap(long, action, global = true, env = "DOD_DISTRIBUTION")]
+    pub(crate) distribution: Option<String>,
+
+    /// Use sudo to elevate privileges
+    #[clap(long, action, global = true, env = "DOD_USE_SUDO")]
+    pub(crate) use_sudo: bool,
+
+    /// Deploy files to directories other than the user's HOME
+    #[clap(long, action, global = true, env = "DOD_DEPLOY_SYS_FILES")]
+    pub(crate) deploy_sys_files: bool,
+
+    /// Command used to install packages
+    #[clap(long, action, global = true, env = "DOD_INSTALL_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
+    pub(crate) install_pkg_cmd: Option<Vec<String>>,
+
+    /// Command used to remove packages
+    #[clap(long, action, global = true, env = "DOD_REMOVE_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
+    pub(crate) remove_pkg_cmd: Option<Vec<String>>,
+
     /// Skip package installation during deployment
-    #[clap(long, short, action, global = true)]
+    #[clap(long, action, global = true, env = "DOD_SKIP_PKG_INSTALL")]
     pub(crate) skip_pkg_install: bool,
+
+    /// Assume "yes" instead of prompting
+    #[clap(short = 'y', long = "noconfirm", global = true, env = "DOD_YES")]
+    pub(crate) noconfirm: bool,
 
     /// Verbosity level (-v = debug, -vv = trace)
     #[clap(

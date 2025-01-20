@@ -148,7 +148,6 @@ mod tests {
     #[test]
     fn test_log_rotation() -> Result<()> {
         let temp_dir = tempdir()?;
-        // let temp_dir = tempfile::Builder::new().keep(true).tempdir()?;
         // Create more than MAX_LOGS log files
         for i in 0..10 {
             // Simulate different timestamps
