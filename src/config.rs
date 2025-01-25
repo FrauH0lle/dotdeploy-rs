@@ -9,6 +9,7 @@ use std::env;
 use std::io::BufRead;
 use std::path::PathBuf;
 
+// Update the Defaults section in the docstring below. AI!
 /// Representation of the Dotdeploy configuration.
 ///
 /// This struct deserializes the configuration file. The file is expected to be found under
@@ -16,6 +17,9 @@ use std::path::PathBuf;
 ///
 /// # Defaults
 ///
+/// - `dry_run`: false
+/// - `force`: false
+/// - `noconfirm`: false
 /// - `config_root`: `"~/.dotfiles/"`
 /// - `modules_root`: `"~/.dotfiles/modules/"`
 /// - `hosts_root`: `"~/.dotfiles/hosts/"`
@@ -23,9 +27,11 @@ use std::path::PathBuf;
 /// - `distribution`: Automatically detected by default if possible.
 /// - `use_sudo`: true
 /// - `deploy_sys_files`: true
-/// - `install_pkg_cmd`: None. Will choose appropiate commands for supported distributions.
-/// - `remove_pkg_cmd`: None. Will choose appropiate commands for supported distributions.
+/// - `install_pkg_cmd`: None. Will choose appropriate commands for supported distributions.
+/// - `remove_pkg_cmd`: None. Will choose appropriate commands for supported distributions.
 /// - `skip_pkg_install`: false
+/// - `user_store_path`: `"$XDG_DATA_HOME/dotdeploy"` or `"~/.local/share/dotdeploy"`
+/// - `system_store_path`: `"/var/lib/dotdeploy"`
 ///
 /// # Example Configuration
 /// To override options, your `config.toml` might look like this:
@@ -57,15 +63,20 @@ pub(crate) struct DotdeployConfig {
     pub(crate) distribution: String,
     /// Use sudo to elevate privileges.
     pub(crate) use_sudo: bool,
+    /// Use sudo to elevate privileges.
+    pub(crate) sudo_cmd: String,
     /// Deploy files to directories other than the user's HOME.
     pub(crate) deploy_sys_files: bool,
     /// Command used to install packages.
-    // FIXME 2025-01-18: I do not know why a VecDeque is necessary here?
     pub(crate) install_pkg_cmd: Option<Vec<String>>,
     /// Command used to remove packages.
     pub(crate) remove_pkg_cmd: Option<Vec<String>>,
     /// Skip package installation during deployment
     pub(crate) skip_pkg_install: bool,
+    /// Directory of the user store
+    pub(crate) user_store_path: PathBuf,
+    /// Directory of the system store
+    pub(crate) system_store_path: PathBuf,
 }
 
 impl DotdeployConfig {
@@ -193,11 +204,14 @@ impl DotdeployConfig {
             hostname: Option<String>,
             distribution: Option<String>,
             use_sudo: Option<bool>,
+            sudo_cmd: Option<String>,
             deploy_sys_files: Option<bool>,
             install_pkg_cmd: Option<Vec<String>>,
             remove_pkg_cmd: Option<Vec<String>>,
             skip_pkg_install: Option<bool>,
             noconfirm: Option<bool>,
+            user_store_path: Option<PathBuf>,
+            system_store_path: Option<PathBuf>,
         }
 
         // Parse the configuration string
@@ -260,11 +274,33 @@ impl DotdeployConfig {
                 .hostname
                 .unwrap_or_else(|| Self::get_hostname().unwrap()),
             use_sudo: parsed_data.use_sudo.unwrap_or(true),
+            sudo_cmd: parsed_data.sudo_cmd.unwrap_or("sudo".to_string()),
             deploy_sys_files: parsed_data.deploy_sys_files.unwrap_or(true),
             install_pkg_cmd: parsed_data.install_pkg_cmd,
-            skip_pkg_install: parsed_data.skip_pkg_install.unwrap_or(false),
             remove_pkg_cmd: parsed_data.remove_pkg_cmd,
+            skip_pkg_install: parsed_data.skip_pkg_install.unwrap_or(false),
             noconfirm: parsed_data.noconfirm.unwrap_or(false),
+            user_store_path: parsed_data.user_store_path.unwrap_or_else(|| {
+                if let Ok(xdg_dir) = env::var("XDG_DATA_HOME") {
+                    // Use XDG_DATA_HOME if available
+                    [xdg_dir.as_str(), "dotdeploy"].iter().collect()
+                } else {
+                    // Fallback to HOME/.local/share/dotdeploy
+                    [
+                        env::var("HOME")
+                            .expect("HOME environment variable not set")
+                            .as_str(),
+                        ".local",
+                        "share",
+                        "dotdeploy",
+                    ]
+                    .iter()
+                    .collect()
+                }
+            }),
+            system_store_path: parsed_data
+                .system_store_path
+                .unwrap_or(PathBuf::from("/var/lib/dotdeploy")),
         })
     }
 }

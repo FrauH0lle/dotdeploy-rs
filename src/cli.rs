@@ -20,11 +20,11 @@ pub(crate) struct Cli {
 
     /// Show what would happen without making changes
     #[clap(long, short, action, global = true, env = "DOD_DRY_RUN")]
-    pub(crate) dry_run: bool,
+    pub(crate) dry_run: Option<bool>,
 
     /// Skip confirmations for destructive operations
     #[clap(long, short, action, global = true, env = "DOD_FORCE")]
-    pub(crate) force: bool,
+    pub(crate) force: Option<bool>,
 
     /// Root folder of dotfiles
     #[clap(long, action, global = true, env = "DOD_CONFIG_ROOT")]
@@ -36,7 +36,7 @@ pub(crate) struct Cli {
 
     /// Root folder of Dotedeploy hosts
     #[clap(long, action, global = true, env = "DOD_HOSTS_ROOT")]
-    pub(crate) hosts_root:  Option<PathBuf>,
+    pub(crate) hosts_root: Option<PathBuf>,
 
     /// Host device's hostname
     #[clap(long, action, global = true, env = "DOD_HOSTNAME")]
@@ -48,11 +48,11 @@ pub(crate) struct Cli {
 
     /// Use sudo to elevate privileges
     #[clap(long, action, global = true, env = "DOD_USE_SUDO")]
-    pub(crate) use_sudo: bool,
+    pub(crate) use_sudo: Option<bool>,
 
     /// Deploy files to directories other than the user's HOME
     #[clap(long, action, global = true, env = "DOD_DEPLOY_SYS_FILES")]
-    pub(crate) deploy_sys_files: bool,
+    pub(crate) deploy_sys_files: Option<bool>,
 
     /// Command used to install packages
     #[clap(long, action, global = true, env = "DOD_INSTALL_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
@@ -64,11 +64,19 @@ pub(crate) struct Cli {
 
     /// Skip package installation during deployment
     #[clap(long, action, global = true, env = "DOD_SKIP_PKG_INSTALL")]
-    pub(crate) skip_pkg_install: bool,
+    pub(crate) skip_pkg_install: Option<bool>,
 
     /// Assume "yes" instead of prompting
     #[clap(short = 'y', long = "noconfirm", global = true, env = "DOD_YES")]
-    pub(crate) noconfirm: bool,
+    pub(crate) noconfirm: Option<bool>,
+
+    /// Directory of the user store
+    #[clap(long, action, global = true, env = "DOD_USER_STORE")]
+    pub(crate) user_store: Option<PathBuf>,
+
+    /// Directory of the system store
+    #[clap(long, action, global = true, env = "DOD_SYSTEM_STORE")]
+    pub(crate) system_store: Option<PathBuf>,
 
     /// Verbosity level (-v = debug, -vv = trace)
     #[clap(
