@@ -5,13 +5,15 @@
 //! functionality to elevate privileges when necessary, using sudo for operations that might require
 //! higher permissions.
 
-use std::path::{Path, PathBuf};
-
-use anyhow::{anyhow, bail, Context, Result};
-use tokio::fs;
-
 use crate::utils::common;
 use crate::utils::sudo;
+use color_eyre::{
+    eyre::{eyre, WrapErr},
+    Result,
+};
+use std::path::{Path, PathBuf};
+use tokio::fs;
+use tracing::{instrument, warn};
 
 /// Converts a path to a string, handling potential Unicode conversion errors.
 ///
@@ -38,7 +40,7 @@ pub(crate) fn path_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
         .as_ref()
         .to_str()
         .ok_or_else(|| {
-            anyhow!(
+            eyre!(
                 "Filename {:?} contains invalid Unicode characters",
                 path.as_ref()
             )
@@ -70,7 +72,7 @@ pub(crate) async fn check_file_exists<P: AsRef<Path>>(path: P) -> Result<bool> {
             Ok(sudo::sudo_exec_success("test", &["-e", &path_to_string(path)?], None).await?)
         }
         Err(e) => {
-            Err(e).with_context(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
+            Err(e).wrap_err_with(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
         }
     }
 }
@@ -124,7 +126,7 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
             }
         }
         Err(e) => {
-            Err(e).with_context(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
+            Err(e).wrap_err_with(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
         }
     }
 }
@@ -177,7 +179,7 @@ pub(crate) async fn ensure_dir_exists<P: AsRef<Path>>(path: P) -> Result<()> {
             // If permission is denied, use sudo to create the directory
             Ok(sudo::sudo_exec("mkdir", &["-p", &path_to_string(&path)?], None).await?)
         }
-        Err(e) => Err(e).with_context(|| format!("Falied to delete {:?}", &path.as_ref()))?,
+        Err(e) => Err(e).wrap_err_with(|| format!("Falied to delete {:?}", &path.as_ref()))?,
     }
 }
 
@@ -194,6 +196,7 @@ pub(crate) async fn ensure_dir_exists<P: AsRef<Path>>(path: P) -> Result<()> {
 ///
 /// * `Ok(())` - If the file was successfully deleted or didn't exist.
 /// * `Err` - If an error occurs during the deletion.
+#[instrument(skip(path))]
 pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     match fs::remove_file(&path).await {
         Ok(_) => Ok(()),
@@ -204,7 +207,7 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
             warn!("{}", e);
             Ok(())
         }
-        Err(e) => Err(e).with_context(|| format!("Falied to delete {:?}", &path.as_ref()))?,
+        Err(e) => Err(e).wrap_err_with(|| format!("Falied to delete {:?}", &path.as_ref()))?,
     }
 }
 
@@ -227,7 +230,7 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
     let mut path = path
         .as_ref()
         .parent()
-        .with_context(|| format!("Failed to get parent of {:?}", path.as_ref()))?;
+        .ok_or_else(|| eyre!("Failed to get parent of {:?}", path.as_ref()))?;
 
     while path.is_dir()
         && match path.read_dir() {
@@ -247,14 +250,14 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
                 if output.status.success() {
                     !output.stdout.is_empty()
                 } else {
-                    bail!(
+                    return Err(eyre!(
                         "Failed to check if directory {} is empty: {}",
                         path_str,
                         String::from_utf8(output.stderr)?
-                    )
+                    ));
                 }
             }
-            Err(e) => Err(e).with_context(|| format!("Failed to read directory {:?}", path))?,
+            Err(e) => Err(e).wrap_err_with(|| format!("Failed to read directory {:?}", path))?,
         }
     {
         if no_ask
@@ -270,13 +273,13 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
                     sudo::sudo_exec("rmdir", &[&path_to_string(path)?], None).await?
                 }
                 Err(e) => {
-                    Err(e).with_context(|| format!("Failed to remove directory {:?}", path))?
+                    Err(e).wrap_err_with(|| format!("Failed to remove directory {:?}", path))?
                 }
             }
         }
         path = path
             .parent()
-            .with_context(|| format!("Failed to get parent of {:?}", path))?;
+            .ok_or_else(|| eyre!("Failed to get parent of {:?}", path))?;
     }
     Ok(())
 }
@@ -383,7 +386,13 @@ mod tests {
         std::fs::File::create(temp_dir.path().join("file1.txt"))?;
         std::fs::File::create(temp_dir.path().join("file2.txt"))?;
         std::fs::File::create(temp_dir.path().join("test1").join("file3.txt"))?;
-        std::fs::File::create(temp_dir.path().join("test1").join("test2").join("file4.txt"))?;
+        std::fs::File::create(
+            temp_dir
+                .path()
+                .join("test1")
+                .join("test2")
+                .join("file4.txt"),
+        )?;
 
         let files = read_directory(temp_dir.path())?;
         assert_eq!(files.len(), 4, "Should find 4 files");

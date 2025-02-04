@@ -4,7 +4,7 @@
 //! IDs. It includes functionality to convert between different representations of permissions and
 //! to resolve user and group names to their respective numeric IDs.
 
-use anyhow::{Context, Result};
+use color_eyre::{eyre::WrapErr, Result};
 
 /// Converts permissions from u32 to string format.
 ///
@@ -58,7 +58,7 @@ pub(crate) fn perms_int_to_str(p: u32) -> Result<String> {
 /// # }
 /// ```
 pub(crate) fn perms_str_to_int<S: AsRef<str>>(p: S) -> Result<u32> {
-    u32::from_str_radix(p.as_ref(), 8).context("Failed to convert permission string to u32")
+    u32::from_str_radix(p.as_ref(), 8).wrap_err("Failed to convert permission string to u32")
 }
 
 /// Converts a username to its corresponding user ID (UID).

@@ -5,13 +5,14 @@
 //! work in both asynchronous and synchronous contexts, utilizing Tokio for asynchronous file
 //! operations and spawning blocking tasks for CPU-intensive hashing operations.
 
-use std::path::Path;
-
-use anyhow::{anyhow, bail, Context, Result};
-use sha2::{Digest, Sha256};
-use tokio::fs;
-
 use crate::utils::sudo;
+use color_eyre::{
+    eyre::{eyre, WrapErr},
+    Result,
+};
+use sha2::{Digest, Sha256};
+use std::path::Path;
+use tokio::fs;
 
 /// Calculates the SHA256 checksum of a file, elevating privileges if necessary.
 ///
@@ -60,20 +61,23 @@ pub(crate) async fn calculate_sha256_checksum<P: AsRef<Path>>(path: P) -> Result
                 .stdout;
 
             if output.is_empty() {
-                bail!("sha256sum {:?} did not return any output", path.as_ref())
+                return Err(eyre!(
+                    "sha256sum {:?} did not return any output",
+                    path.as_ref()
+                ));
             } else {
                 // Parse the output to extract the checksum
                 String::from_utf8(output)?
                     .split_whitespace()
                     .next()
-                    .ok_or_else(|| anyhow!("Failed to split whitespace"))?
+                    .ok_or_else(|| eyre!("Failed to split whitespace"))?
                     .trim()
                     .to_string()
             }
         }
         // Propagate any other errors
         Err(e) => Err(e)
-            .with_context(|| format!("Falied to calculate checksum of {:?}", &path.as_ref()))?,
+            .wrap_err_with(|| format!("Falied to calculate checksum of {:?}", &path.as_ref()))?,
     };
 
     Ok(checksum)

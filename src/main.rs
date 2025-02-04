@@ -1,68 +1,65 @@
-use std::fmt::Write;
+use color_eyre::{eyre::WrapErr, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::LazyLock;
-
-use anyhow::{Context, Result};
-use log::error;
-
-#[macro_use]
-extern crate log;
+use std::sync::RwLock;
+use tracing::{info, instrument};
 
 mod cli;
 mod config;
 mod logs;
-mod store;
+// mod store;
 mod utils;
 
 // -------------------------------------------------------------------------------------------------
 // Global Variables
 // -------------------------------------------------------------------------------------------------
 
-/// Global variable, available to all threads, indicating if sudo can be used.
+/// Global flag indicating whether sudo/privilege escalation should be used.
+///
+/// This is set during initialization based on configuration and used throughout the application to
+/// determine if operations need elevated privileges.
 static USE_SUDO: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false));
 
+/// Global lock to synchronize terminal access for privilege escalation prompts.
+///
+/// This ensures that sudo password prompts and similar terminal interactions don't overlap and
+/// confuse the user, especially in concurrent operations.
+static TERMINAL_LOCK: LazyLock<Arc<RwLock<()>>> = LazyLock::new(|| Arc::new(RwLock::new(())));
+
+#[instrument]
 fn main() {
-    let dotdeploy_config = match init_config() {
-        Ok(config) => config,
+    // Initialize color_eyre
+    color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
+
+    // Initialize logging
+    let _log_guard = match logs::init_logging(cli::get_cli().verbosity) {
+        Ok(guard) => guard,
         Err(e) => {
-            eprint!("Failed to initialize config. Exiting");
-            eprint!("{}", e);
+            eprintln!("Failed to initialize logging. Exiting");
+            eprintln!("{:?}", e);
             std::process::exit(1);
         }
     };
+
+    let dotdeploy_config = match init_config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to initialize config. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+
     match run(dotdeploy_config) {
         Ok(success) if success => std::process::exit(0),
         Ok(_) => std::process::exit(1),
         Err(e) => {
-            display_error(e);
+            eprintln!("An error occured during deployment. Exiting");
+            eprintln!("{:?}", e);
             std::process::exit(1);
         }
     }
-}
-
-/// Formats and displays an error chain in a user-friendly way.
-///
-/// Takes an anyhow::Error and displays its full error chain, showing each cause in sequence. The
-/// output format is:
-///
-/// ```
-/// <main error message>
-/// Caused by:
-///     <cause 1>
-///     <cause 2>
-///     ...
-/// ```
-pub(crate) fn display_error(error: anyhow::Error) {
-    let mut chain = error.chain();
-    let mut error_message = format!("{}\nCaused by:\n", chain.next().unwrap());
-
-    for e in chain {
-        writeln!(error_message, "    {}", e).unwrap();
-    }
-    // Remove last \n
-    error_message.pop();
-
-    error!("{}", error_message);
 }
 
 /// Initializes and configures Dotdeploy by:
@@ -84,13 +81,13 @@ pub(crate) fn display_error(error: anyhow::Error) {
 /// - Logging initialization fails
 /// - Configuration file parsing fails
 /// - Required paths or values are missing
+#[instrument]
 fn init_config() -> Result<config::DotdeployConfig> {
     let cli = cli::get_cli();
-    logs::init_logging(cli.verbosity)?;
 
     // Read config from file, if any
     let mut dotdeploy_config =
-        config::DotdeployConfig::init().context("Failed to initialize Dotdeploy config")?;
+        config::DotdeployConfig::init().wrap_err("Failed to initialize Dotdeploy config")?;
 
     // Merge CLI args into config
     if let Some(flag) = cli.dry_run {
@@ -165,14 +162,36 @@ fn init_config() -> Result<config::DotdeployConfig> {
     // Set USE_SUDO
     USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
 
-    debug!("Config initialized:\n{:#?}", &dotdeploy_config);
+    tracing::debug!("Config initialized:\n{:#?}", &dotdeploy_config);
 
     Ok(dotdeploy_config)
 }
 
 #[tokio::main]
+#[instrument]
 async fn run(config: config::DotdeployConfig) -> Result<bool> {
     // store::create_system_dir(&config.system_store_path).await?;
     // store::create_user_dir(&config.user_store_path).await?;
+    // let (first, second) = tokio::join!(
+    //     utils::sudo::spawn_sudo_maybe("Just for fun..."),
+    //     utils::sudo::spawn_sudo_maybe("A second time, just for fun...")
+    // );
+    let mut tasks = Vec::new();
+    for n in 1..101 {
+        info!(?n, "lauching task");
+        // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        tasks.push(tokio::spawn(utils::sudo::sudo_exec_output(
+            "echo",
+            &["hi", "there"],
+            None,
+        )));
+    }
+    let mut outputs = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        outputs.push(task.await.unwrap());
+    }
+    println!("{:?}", outputs);
+    // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     todo!("oha")
 }

@@ -4,16 +4,14 @@
 //! ownership, and checksums. It handles privilege elevation when necessary, allowing operations on
 //! files that might require higher permissions.
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
-
-use anyhow::{Context, Result};
-use tokio::fs;
-
 use crate::utils::file_checksum;
 use crate::utils::file_fs;
 use crate::utils::file_permissions;
 use crate::utils::sudo;
+use color_eyre::{eyre::WrapErr, Result};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use tokio::fs;
 
 /// Represents the metadata of a file or symbolic link.
 ///
@@ -87,10 +85,10 @@ pub(crate) async fn get_file_metadata<P: AsRef<Path>>(path: P) -> Result<FileMet
 
             fs::symlink_metadata(&temp_file)
                 .await
-                .with_context(|| format!("Failed to get metadata of {:?}", &temp_file))?
+                .wrap_err_with(|| format!("Failed to get metadata of {:?}", &temp_file))?
         }
         Err(e) => {
-            Err(e).with_context(|| format!("Falied to get metadata of {:?}", &path.as_ref()))?
+            Err(e).wrap_err_with(|| format!("Falied to get metadata of {:?}", &path.as_ref()))?
         }
     };
 
@@ -166,7 +164,7 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
                 .await?
             }
             Err(e) => Err(e)
-                .with_context(|| format!("Failed to set permissions for {:?}", &path.as_ref()))?,
+                .wrap_err_with(|| format!("Failed to set permissions for {:?}", &path.as_ref()))?,
         }
     }
     // Set file ownership if specified
@@ -185,7 +183,7 @@ pub(crate) async fn set_file_metadata<P: AsRef<Path>>(
                 )
                 .await?
             }
-            Err(e) => Err(e).with_context(|| {
+            Err(e) => Err(e).wrap_err_with(|| {
                 format!("Failed to set user and group for {:?}", &path.as_ref())
             })?,
         }

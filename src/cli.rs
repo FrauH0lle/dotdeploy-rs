@@ -2,7 +2,6 @@
 //! application, using the clap crate for parsing and handling command-line
 //! arguments.
 
-
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -83,7 +82,7 @@ pub(crate) struct Cli {
         short,
         long,
         action = clap::ArgAction::Count,
-        global = true
+        global = true, env = "DOD_VERBOSE"
     )]
     pub(crate) verbosity: u8,
 }

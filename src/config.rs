@@ -3,11 +3,12 @@
 //! It provides functionality to read, parse, and initialize the configuration from a TOML file or
 //! use default values when necessary.
 
-use anyhow::{Context, Result};
+use color_eyre::{eyre::WrapErr, Result};
 use serde::Deserialize;
 use std::env;
 use std::io::BufRead;
 use std::path::PathBuf;
+use tracing::{debug, error, instrument};
 
 // Update the Defaults section in the docstring below. AI!
 /// Representation of the Dotdeploy configuration.
@@ -87,6 +88,7 @@ impl DotdeployConfig {
     ///
     /// # Errors
     /// Returns an error if reading the config file fails.
+    #[instrument]
     fn read_config_file() -> Result<String> {
         // Determine the config file path based on environment variables
         let config_file_path: PathBuf = if let Ok(xdg_dir) = env::var("XDG_CONFIG_HOME") {
@@ -107,8 +109,9 @@ impl DotdeployConfig {
 
         // Read and return the contents of the config file
         let config_file_content: String = std::fs::read_to_string(&config_file)
-            .with_context(|| format!("Failed to read config from {:?}", &config_file))?;
+            .wrap_err_with(|| format!("Failed to read config from {:?}", &config_file))?;
 
+        // Ok(std::fs::read_to_string(&config_file)?)
         Ok(config_file_content)
     }
 
@@ -116,6 +119,7 @@ impl DotdeployConfig {
     ///
     /// Checks `/etc/os-release` for the "ID" field and retrieves the value. Returns "unknown" if
     /// not successful.
+    #[instrument]
     fn get_distro() -> Result<String> {
         let os_release_file = std::fs::File::open("/etc/os-release");
         let mut distro_string = String::new();
@@ -128,11 +132,15 @@ impl DotdeployConfig {
                     if let Ok(line) = line {
                         if line.starts_with("ID=") {
                             // Extract and return the distribution ID
-                            distro_string.push_str(line.trim_start_matches("ID=").trim());
+                            distro_string
+                                .push_str(line.trim_start_matches("ID=").trim_matches('"').trim());
                         } else if line.starts_with("VERSION_ID=") {
                             // Extract and return the distribution version ID
-                            distro_version_string
-                                .push_str(line.trim_start_matches("VERSION_ID=").trim());
+                            distro_version_string.push_str(
+                                line.trim_start_matches("VERSION_ID=")
+                                    .trim_matches('"')
+                                    .trim(),
+                            );
                         }
                     }
                 }
@@ -156,6 +164,7 @@ impl DotdeployConfig {
     /// Retrieve the hostname.
     ///
     /// Uses the `nix` crate to get the system hostname. Returns "unknown" if not successful.
+    #[instrument]
     fn get_hostname() -> Result<String> {
         match nix::unistd::gethostname() {
             Ok(hostname) => match hostname.into_string() {
@@ -182,12 +191,13 @@ impl DotdeployConfig {
     ///
     /// If found, it parses the config file and tries to expand all paths. If the config file is
     /// absent or fields are missing it will use default values (see [DotdeployConfig]).
+    #[instrument]
     pub(crate) fn init() -> Result<DotdeployConfig> {
         // Attempt to read the config file, use an empty string if not found
         let conf_string = match Self::read_config_file() {
             Ok(s) => s,
-            Err(e) => {
-                debug!("{:?}", e);
+            Err(_e) => {
+                // debug!("{:?}", e);
                 debug!("Default config values will be used");
                 "".to_string()
             }
@@ -222,7 +232,7 @@ impl DotdeployConfig {
             .config_root
             .map(|path| {
                 shellexpand::full(&path)
-                    .context("Failed to expand file path")
+                    .wrap_err("Failed to expand file path")
                     .unwrap()
                     .to_string()
             })
@@ -233,7 +243,7 @@ impl DotdeployConfig {
             .modules_root
             .map(|path| {
                 shellexpand::full(&path)
-                    .context("Failed to expand file path")
+                    .wrap_err("Failed to expand file path")
                     .unwrap()
                     .to_string()
             })
@@ -249,7 +259,7 @@ impl DotdeployConfig {
             .hosts_root
             .map(|path| {
                 shellexpand::full(&path)
-                    .context("Failed to expand file path")
+                    .wrap_err("Failed to expand file path")
                     .unwrap()
                     .to_string()
             })
