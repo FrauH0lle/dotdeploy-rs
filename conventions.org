@@ -1,0 +1,24 @@
+#+title: Conventions
+
+* Testing
+- Add a description to the assert statements in the unit tests
+  - Example
+    #+begin_src rust
+    create_user_dir(&test_path).await?;
+    assert!(test_path.exists(), "create user store directory");
+    #+end_src
+* Documentation
+The basic structure of item documentation should follow:
+#+begin_src rust
+/// Brief sentence explaining what it is
+///
+/// More detaile description (optional).
+///
+/// * `foo` - Text about foo.
+/// * `bar` - Text about bar.
+///
+/// # Errors (optional)
+/// If the function returns a Result, describing the kinds of errors that might occur and what
+/// conditions might cause those errors.
+#+end_src
+- A separate ~Returns~ section or similar is usually not necessary.

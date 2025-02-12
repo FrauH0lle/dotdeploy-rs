@@ -6,11 +6,9 @@
 //!
 //! The module is adapted from: <https://github.com/Morganamilo/paru/blob/5355012aa3529014145b8940dd0c62b21e53095a/src/exec.rs#L144>
 
-use crate::TERMINAL_LOCK;
-use color_eyre::{
-    eyre::{eyre, WrapErr},
-    Result,
-};
+use crate::{SUDO_CMD, TERMINAL_LOCK};
+use color_eyre::eyre::{eyre, WrapErr};
+use color_eyre::{Result, Section};
 use std::ffi::OsStr;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +30,7 @@ static SUDO_LOOP_RUNNING: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::ne
 
 /// Global mutex to synchronize access to sudo operations.
 ///
-/// This ensures that sudo password prompts and privilege escalation operations don't interfere with
+/// This ensures that sudo password prompts and privilege elevation operations don't interfere with
 /// each other when running concurrently.
 static SUDO_MUTEX: LazyLock<Arc<Mutex<()>>> = LazyLock::new(|| Arc::new(Mutex::new(())));
 
@@ -61,7 +59,7 @@ impl GetRootCmd {
         }
     }
 
-    /// Returns the command string for privilege escalation.
+    /// Returns the command string for privilege elevation.
     ///
     /// For sudo, this returns "sudo".
     fn cmd(&self) -> &str {
@@ -117,8 +115,13 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str> + std::fmt::Debug>(reason: S)
             // Double-check the flag to handle race conditions
             is_running = SUDO_LOOP_RUNNING.load(Ordering::Relaxed);
             if !is_running {
-                // NOTE 2024-09-24: For the time being, we only support sudo and hardcode it here.
-                let sudo_cmd = GetRootCmd::use_sudo();
+                let sudo_cmd = match SUDO_CMD.get() {
+                    Some(cmd) if cmd == "sudo" => GetRootCmd::use_sudo(),
+                    Some(_) => return Err(eyre!("Unknown 'sudo' command")),
+                    None => return Err(eyre!("'sudo' command not set")
+                        .suggestion("Check the value of 'sudo_cmd' in the dotdeploy config")),
+                };
+
                 // Run sudo loop
                 sudo_loop(&sudo_cmd)?;
                 SUDO_LOOP_RUNNING.store(true, Ordering::Relaxed);
@@ -153,7 +156,7 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
     debug!(
         cmd = format!("{} {}", &sudo.cmd(), format_args(&sudo.initial_flags())),
-        "Executing privilege escalation command"
+        "Executing privilege elevation command"
     );
 
     let guard = TERMINAL_LOCK.write();
@@ -349,6 +352,8 @@ mod tests {
     #[tokio::test]
     async fn test_sudo_exec() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
+
         assert!(sudo_exec("test", &["4", "-gt", "0"], None).await.is_ok());
         assert!(sudo_exec("test", &["4", "-eq", "0"], None).await.is_err());
         Ok(())
@@ -357,6 +362,8 @@ mod tests {
     #[tokio::test]
     async fn test_sudo_exec_output() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
+
         let output = sudo_exec_output("echo", &["-n", "success"], None).await?;
         assert!(!output.stdout.is_empty());
         let output = sudo_exec_output("echo", &["-n"], None).await?;
@@ -367,6 +374,8 @@ mod tests {
     #[tokio::test]
     async fn test_sudo_exec_success() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
+
         assert!(sudo_exec_success("test", &["4", "-gt", "0"], None).await?);
         assert!(!sudo_exec_success("test", &["4", "-eq", "0"], None).await?);
         Ok(())

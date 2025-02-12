@@ -21,12 +21,11 @@ use tracing_subscriber::{fmt, EnvFilter};
 /// It also handles log rotation to keep only the most recent logs.
 ///
 /// # Arguments
-///
 /// * `verbosity` - Controls the log level (0 = Info, 1 = Debug, 2 = Trace)
 ///
 /// # Returns
-///
-/// Returns `Ok(())` if logging was successfully initialized, or an error if something failed.
+/// Returns `Ok(WorkerGuard)` if logging was successfully initialized, or an error if something
+/// failed.
 #[instrument]
 pub(crate) fn init_logging(verbosity: u8) -> Result<WorkerGuard> {
     // Convert verbosity level to Level
@@ -44,7 +43,7 @@ pub(crate) fn init_logging(verbosity: u8) -> Result<WorkerGuard> {
     let file_appender =
         tracing_appender::rolling::never(&log_dir, format!("dotdeploy_{}.log", timestamp));
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    
+
     // Create terminal layer, INFO level only
     let terminal_info_layer = fmt::layer()
         .with_target(if level >= Level::DEBUG { true } else { false })
@@ -60,7 +59,10 @@ pub(crate) fn init_logging(verbosity: u8) -> Result<WorkerGuard> {
         .with_timer(tracing_subscriber::fmt::time::ChronoLocal::new(
             "%FT%X%.3f".to_string(),
         ))
-        .with_filter(FilterFn::new(|metadata| metadata.level() == &Level::INFO));
+        .with_filter(FilterFn::new(move |metadata| {
+            metadata.level() == &Level::INFO
+                && (level == Level::TRACE || metadata.target().starts_with("dotdeploy"))
+        }));
 
     // Create terminal layer, all other levels
     let terminal_non_info_layer = fmt::layer()
@@ -78,7 +80,10 @@ pub(crate) fn init_logging(verbosity: u8) -> Result<WorkerGuard> {
             "%FT%X%.3f".to_string(),
         ))
         .with_filter(EnvFilter::from_env("DOD_VERBOSE").add_directive(level.into()))
-        .with_filter(FilterFn::new(|metadata| metadata.level() != &Level::INFO));
+        .with_filter(FilterFn::new(move |metadata| {
+            metadata.level() != &Level::INFO
+                && (level == Level::TRACE || metadata.target().starts_with("dotdeploy"))
+        }));
 
     // Create file layer
     let file_layer = fmt::layer()
@@ -135,11 +140,9 @@ fn get_log_dir() -> Result<PathBuf> {
 /// Rotate log files, keeping only the most recent ones.
 ///
 /// # Arguments
-///
 /// * `log_dir` - Directory containing the log files
 ///
 /// # Returns
-///
 /// Returns `Ok(())` if rotation was successful, or an error if file operations failed.
 #[instrument(skip(log_dir))]
 fn rotate_logs<P: AsRef<Path>>(log_dir: P) -> Result<()> {

@@ -6,10 +6,8 @@
 //! operations and spawning blocking tasks for CPU-intensive hashing operations.
 
 use crate::utils::sudo;
-use color_eyre::{
-    eyre::{eyre, WrapErr},
-    Result,
-};
+use color_eyre::eyre::{eyre, WrapErr};
+use color_eyre::Result;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::fs;
@@ -93,6 +91,7 @@ mod tests {
     #[tokio::test]
     async fn test_calculate_sha256_checksum() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
         let checksum = calculate_sha256_checksum(&temp_file).await?;

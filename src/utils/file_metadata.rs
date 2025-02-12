@@ -202,6 +202,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_file_metadata() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
         let meta = get_file_metadata(temp_file.path()).await?;
@@ -263,6 +264,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_file_metadata() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
         set_file_metadata(

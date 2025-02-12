@@ -7,10 +7,8 @@
 
 use crate::utils::common;
 use crate::utils::sudo;
-use color_eyre::{
-    eyre::{eyre, WrapErr},
-    Result,
-};
+use color_eyre::eyre::{eyre, WrapErr};
+use color_eyre::Result;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{instrument, warn};
@@ -179,7 +177,7 @@ pub(crate) async fn ensure_dir_exists<P: AsRef<Path>>(path: P) -> Result<()> {
             // If permission is denied, use sudo to create the directory
             Ok(sudo::sudo_exec("mkdir", &["-p", &path_to_string(&path)?], None).await?)
         }
-        Err(e) => Err(e).wrap_err_with(|| format!("Falied to delete {:?}", &path.as_ref()))?,
+        Err(e) => Err(e).wrap_err_with(|| format!("Falied to create {:?}", &path.as_ref()))?,
     }
 }
 
@@ -313,6 +311,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_file_exists() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
         assert!(check_file_exists(temp_file).await?);
@@ -337,6 +336,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_link_exists() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
         let temp_file_pathbuf = PathBuf::from(&temp_file.path());
@@ -405,8 +405,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ensure_dir() -> Result<()> {
+    async fn test_ensure_dir_exists() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_dir = tempfile::tempdir()?;
         let target = temp_dir.path().join("a").join("b").join("c");
@@ -435,6 +436,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_file() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_file = tempfile::NamedTempFile::new()?;
 
@@ -466,6 +468,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_parents() -> Result<()> {
         crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = crate::SUDO_CMD.set("sudo".to_string());
 
         let temp_dir = tempfile::tempdir()?;
         let temp_path1 = temp_dir.path().join("test1");

@@ -1,31 +1,31 @@
 use color_eyre::{eyre::WrapErr, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::sync::LazyLock;
-use std::sync::RwLock;
-use tracing::{info, instrument};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use tracing::{debug, info, instrument};
 
 mod cli;
 mod config;
 mod logs;
-// mod store;
+mod store;
 mod utils;
 
 // -------------------------------------------------------------------------------------------------
 // Global Variables
 // -------------------------------------------------------------------------------------------------
 
-/// Global flag indicating whether sudo/privilege escalation should be used.
+/// Global flag indicating whether sudo/privilege elevation should be used.
 ///
 /// This is set during initialization based on configuration and used throughout the application to
 /// determine if operations need elevated privileges.
 static USE_SUDO: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false));
 
-/// Global lock to synchronize terminal access for privilege escalation prompts.
+/// Global lock to synchronize terminal access for privilege elevation prompts.
 ///
 /// This ensures that sudo password prompts and similar terminal interactions don't overlap and
 /// confuse the user, especially in concurrent operations.
 static TERMINAL_LOCK: LazyLock<Arc<RwLock<()>>> = LazyLock::new(|| Arc::new(RwLock::new(())));
+
+static SUDO_CMD: OnceLock<String> = OnceLock::new();
 
 #[instrument]
 fn main() {
@@ -63,22 +63,16 @@ fn main() {
 }
 
 /// Initializes and configures Dotdeploy by:
+///
 /// 1. Parsing CLI arguments
-/// 2. Setting up logging
-/// 3. Loading configuration from file (if present)
-/// 4. Merging CLI arguments with file configuration
-/// 5. Setting environment variables for (nearly) all configuration values
-/// 6. Returning the final configuration
-///
-/// # Returns
-///
-/// A `Result` containing the fully initialized `DotdeployConfig` or an error if initialization
-/// failed.
+/// 2. Loading configuration from file (if present)
+/// 3. Merging CLI arguments with file configuration
+/// 4. Setting environment variables for (nearly) all configuration values
+/// 5. Returning the final configuration
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - Logging initialization fails
 /// - Configuration file parsing fails
 /// - Required paths or values are missing
 #[instrument]
@@ -161,8 +155,11 @@ fn init_config() -> Result<config::DotdeployConfig> {
 
     // Set USE_SUDO
     USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
+    if USE_SUDO.load(Ordering::Relaxed) {
+        let _ = SUDO_CMD.set(dotdeploy_config.sudo_cmd.clone());
+    }
 
-    tracing::debug!("Config initialized:\n{:#?}", &dotdeploy_config);
+    debug!("Config initialized:\n{:#?}", &dotdeploy_config);
 
     Ok(dotdeploy_config)
 }
@@ -170,28 +167,13 @@ fn init_config() -> Result<config::DotdeployConfig> {
 #[tokio::main]
 #[instrument]
 async fn run(config: config::DotdeployConfig) -> Result<bool> {
-    // store::create_system_dir(&config.system_store_path).await?;
-    // store::create_user_dir(&config.user_store_path).await?;
-    // let (first, second) = tokio::join!(
-    //     utils::sudo::spawn_sudo_maybe("Just for fun..."),
-    //     utils::sudo::spawn_sudo_maybe("A second time, just for fun...")
-    // );
-    let mut tasks = Vec::new();
-    for n in 1..101 {
-        info!(?n, "lauching task");
-        // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        tasks.push(tokio::spawn(utils::sudo::sudo_exec_output(
-            "echo",
-            &["hi", "there"],
-            None,
-        )));
+    let stores = store::Stores::new(&config).await.wrap_err("Failed to initialize stores")?;
+    debug!(stores = ?stores, "Stores initialized");
+
+    stores.user_store.pool.close().await;
+    if let Some(sys_store) = stores.system_store {
+        sys_store.pool.close().await
     }
-    let mut outputs = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        outputs.push(task.await.unwrap());
-    }
-    println!("{:?}", outputs);
-    // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-    todo!("oha")
+
+    Ok(true)
 }

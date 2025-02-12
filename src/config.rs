@@ -10,7 +10,6 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use tracing::{debug, error, instrument};
 
-// Update the Defaults section in the docstring below. AI!
 /// Representation of the Dotdeploy configuration.
 ///
 /// This struct deserializes the configuration file. The file is expected to be found under
@@ -18,21 +17,31 @@ use tracing::{debug, error, instrument};
 ///
 /// # Defaults
 ///
-/// - `dry_run`: false
-/// - `force`: false
-/// - `noconfirm`: false
-/// - `config_root`: `"~/.dotfiles/"`
-/// - `modules_root`: `"~/.dotfiles/modules/"`
-/// - `hosts_root`: `"~/.dotfiles/hosts/"`
-/// - `hostname`: Automatically detected by default if possible.
-/// - `distribution`: Automatically detected by default if possible.
-/// - `use_sudo`: true
-/// - `deploy_sys_files`: true
-/// - `install_pkg_cmd`: None. Will choose appropriate commands for supported distributions.
-/// - `remove_pkg_cmd`: None. Will choose appropriate commands for supported distributions.
-/// - `skip_pkg_install`: false
-/// - `user_store_path`: `"$XDG_DATA_HOME/dotdeploy"` or `"~/.local/share/dotdeploy"`
-/// - `system_store_path`: `"/var/lib/dotdeploy"`
+/// ## Basic Options
+/// - `dry_run`: false - Show what would happen without making changes
+/// - `force`: false - Skip confirmations for destructive operations
+/// - `noconfirm`: false - Assume "yes" instead of prompting
+///
+/// ## Paths
+/// - `config_root`: `"~/.dotfiles/"` - Root folder of dotfiles
+/// - `modules_root`: `"~/.dotfiles/modules/"` - Root folder for module declarations
+/// - `hosts_root`: `"~/.dotfiles/hosts/"` - Root folder for host declarations
+/// - `user_store_path`: `"$XDG_DATA_HOME/dotdeploy"` or `"~/.local/share/dotdeploy"` - User store location
+/// - `system_store_path`: `"/var/lib/dotdeploy"` - System-wide store location
+///
+/// ## System Detection
+/// - `hostname`: Automatically detected from system
+/// - `distribution`: Automatically detected from /etc/os-release
+///
+/// ## Privileges and Permissions
+/// - `use_sudo`: true - Use sudo to elevate privileges when needed
+/// - `sudo_cmd`: "sudo" - Command used for privilege elevation
+/// - `deploy_sys_files`: true - Allow deploying files outside HOME
+///
+/// ## Package Management
+/// - `install_pkg_cmd`: None - Uses distribution-appropriate commands
+/// - `remove_pkg_cmd`: None - Uses distribution-appropriate commands
+/// - `skip_pkg_install`: false - Whether to skip package operations
 ///
 /// # Example Configuration
 /// To override options, your `config.toml` might look like this:
@@ -44,7 +53,7 @@ use tracing::{debug, error, instrument};
 /// use_sudo = true
 /// deploy_sys_files = false
 /// ```
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 pub(crate) struct DotdeployConfig {
     /// Show what would happen without making changes.
     pub(crate) dry_run: bool,
@@ -81,6 +90,44 @@ pub(crate) struct DotdeployConfig {
 }
 
 impl DotdeployConfig {
+    fn new(
+        dry_run: bool,
+        force: bool,
+        noconfirm: bool,
+        config_root: PathBuf,
+        modules_root: PathBuf,
+        hosts_root: PathBuf,
+        hostname: String,
+        distribution: String,
+        use_sudo: bool,
+        sudo_cmd: String,
+        deploy_sys_files: bool,
+        install_pkg_cmd: Option<Vec<String>>,
+        remove_pkg_cmd: Option<Vec<String>>,
+        skip_pkg_install: bool,
+        user_store_path: PathBuf,
+        system_store_path: PathBuf,
+    ) -> Self {
+        DotdeployConfig {
+            dry_run,
+            force,
+            noconfirm,
+            config_root,
+            modules_root,
+            hosts_root,
+            hostname,
+            distribution,
+            use_sudo,
+            sudo_cmd,
+            deploy_sys_files,
+            install_pkg_cmd,
+            remove_pkg_cmd,
+            skip_pkg_install,
+            user_store_path,
+            system_store_path,
+        }
+    }
+
     /// Builds the path to the dotdeploy config file based on environment variables.
     ///
     /// Checks `XDG_CONFIG_HOME` first and then `HOME`. Returns the path to the config file as a
@@ -271,26 +318,26 @@ impl DotdeployConfig {
             });
 
         // Construct and return the final DotdeployConfig struct
-        Ok(DotdeployConfig {
-            dry_run: parsed_data.dry_run.unwrap_or(false),
-            force: parsed_data.force.unwrap_or(false),
-            config_root: PathBuf::from(config_root),
-            modules_root: PathBuf::from(modules_root),
-            hosts_root: PathBuf::from(hosts_root),
-            distribution: parsed_data
-                .distribution
-                .unwrap_or_else(|| Self::get_distro().unwrap()),
-            hostname: parsed_data
+        Ok(DotdeployConfig::new(
+            parsed_data.dry_run.unwrap_or(false),
+            parsed_data.force.unwrap_or(false),
+            parsed_data.noconfirm.unwrap_or(false),
+            PathBuf::from(config_root),
+            PathBuf::from(modules_root),
+            PathBuf::from(hosts_root),
+            parsed_data
                 .hostname
                 .unwrap_or_else(|| Self::get_hostname().unwrap()),
-            use_sudo: parsed_data.use_sudo.unwrap_or(true),
-            sudo_cmd: parsed_data.sudo_cmd.unwrap_or("sudo".to_string()),
-            deploy_sys_files: parsed_data.deploy_sys_files.unwrap_or(true),
-            install_pkg_cmd: parsed_data.install_pkg_cmd,
-            remove_pkg_cmd: parsed_data.remove_pkg_cmd,
-            skip_pkg_install: parsed_data.skip_pkg_install.unwrap_or(false),
-            noconfirm: parsed_data.noconfirm.unwrap_or(false),
-            user_store_path: parsed_data.user_store_path.unwrap_or_else(|| {
+            parsed_data
+                .distribution
+                .unwrap_or_else(|| Self::get_distro().unwrap()),
+            parsed_data.use_sudo.unwrap_or(true),
+            parsed_data.sudo_cmd.unwrap_or("sudo".to_string()),
+            parsed_data.deploy_sys_files.unwrap_or(true),
+            parsed_data.install_pkg_cmd,
+            parsed_data.remove_pkg_cmd,
+            parsed_data.skip_pkg_install.unwrap_or(false),
+            parsed_data.user_store_path.unwrap_or_else(|| {
                 if let Ok(xdg_dir) = env::var("XDG_DATA_HOME") {
                     // Use XDG_DATA_HOME if available
                     [xdg_dir.as_str(), "dotdeploy"].iter().collect()
@@ -308,10 +355,10 @@ impl DotdeployConfig {
                     .collect()
                 }
             }),
-            system_store_path: parsed_data
+            parsed_data
                 .system_store_path
                 .unwrap_or(PathBuf::from("/var/lib/dotdeploy")),
-        })
+        ))
     }
 }
 
