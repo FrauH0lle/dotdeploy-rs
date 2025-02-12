@@ -25,6 +25,10 @@ static USE_SUDO: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false))
 /// confuse the user, especially in concurrent operations.
 static TERMINAL_LOCK: LazyLock<Arc<RwLock<()>>> = LazyLock::new(|| Arc::new(RwLock::new(())));
 
+/// Global storage for the sudo command to be used for privilege elevation.
+///
+/// This is initialized during startup based on configuration and stores the specific command (e.g.,
+/// "sudo", "doas") that should be used when elevated privileges are needed.
 static SUDO_CMD: OnceLock<String> = OnceLock::new();
 
 #[instrument]
