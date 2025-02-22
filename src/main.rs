@@ -1,11 +1,12 @@
 use color_eyre::{eyre::WrapErr, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 mod cli;
 mod config;
 mod logs;
+// mod modules;
 mod store;
 mod utils;
 
@@ -37,7 +38,18 @@ fn main() {
     color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
 
     // Initialize logging
-    let _log_guard = match logs::init_logging(cli::get_cli().verbosity) {
+    let logger = match logs::LoggerBuilder::new()
+        .with_verbosity(cli::get_cli().verbosity)
+        .build()
+    {
+        Ok(logger) => logger,
+        Err(e) => {
+            eprintln!("Failed to setup logging. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+    let _log_guard = match logger.start() {
         Ok(guard) => guard,
         Err(e) => {
             eprintln!("Failed to initialize logging. Exiting");
@@ -97,8 +109,8 @@ fn init_config() -> Result<config::DotdeployConfig> {
     if let Some(flag) = cli.noconfirm {
         dotdeploy_config.noconfirm = flag;
     }
-    if let Some(path) = cli.config_root {
-        dotdeploy_config.config_root = path;
+    if let Some(path) = cli.dotfiles_root {
+        dotdeploy_config.dotfiles_root = path;
     }
     if let Some(path) = cli.modules_root {
         dotdeploy_config.modules_root = path;
@@ -136,22 +148,22 @@ fn init_config() -> Result<config::DotdeployConfig> {
 
     // Make config available as environment variables
     unsafe {
-        std::env::set_var("DOD_DRY_RUN", &dotdeploy_config.dry_run.to_string());
-        std::env::set_var("DOD_FORCE", &dotdeploy_config.force.to_string());
-        std::env::set_var("DOD_YES", &dotdeploy_config.noconfirm.to_string());
-        std::env::set_var("DOD_CONFIG_ROOT", &dotdeploy_config.config_root);
+        std::env::set_var("DOD_DRY_RUN", dotdeploy_config.dry_run.to_string());
+        std::env::set_var("DOD_FORCE", dotdeploy_config.force.to_string());
+        std::env::set_var("DOD_YES", dotdeploy_config.noconfirm.to_string());
+        std::env::set_var("DOD_DOTFILES_ROOT", &dotdeploy_config.dotfiles_root);
         std::env::set_var("DOD_MODULES_ROOT", &dotdeploy_config.modules_root);
         std::env::set_var("DOD_HOSTS_ROOT", &dotdeploy_config.hosts_root);
         std::env::set_var("DOD_HOSTNAME", &dotdeploy_config.hostname);
         std::env::set_var("DOD_DISTRIBUTION", &dotdeploy_config.distribution);
-        std::env::set_var("DOD_USE_SUDO", &dotdeploy_config.use_sudo.to_string());
+        std::env::set_var("DOD_USE_SUDO", dotdeploy_config.use_sudo.to_string());
         std::env::set_var(
             "DOD_DEPLOY_SYS_FILES",
-            &dotdeploy_config.deploy_sys_files.to_string(),
+            dotdeploy_config.deploy_sys_files.to_string(),
         );
         std::env::set_var(
             "DOD_SKIP_PKG_INSTALL",
-            &dotdeploy_config.skip_pkg_install.to_string(),
+            dotdeploy_config.skip_pkg_install.to_string(),
         );
         std::env::set_var("DOD_USER_STORE", &dotdeploy_config.user_store_path);
         std::env::set_var("DOD_SYSTEM_STORE", &dotdeploy_config.system_store_path);
@@ -171,7 +183,9 @@ fn init_config() -> Result<config::DotdeployConfig> {
 #[tokio::main]
 #[instrument]
 async fn run(config: config::DotdeployConfig) -> Result<bool> {
-    let stores = store::Stores::new(&config).await.wrap_err("Failed to initialize stores")?;
+    let stores = store::Stores::new(&config)
+        .await
+        .wrap_err("Failed to initialize stores")?;
     debug!(stores = ?stores, "Stores initialized");
 
     stores.user_store.pool.close().await;

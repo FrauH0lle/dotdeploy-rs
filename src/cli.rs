@@ -26,8 +26,8 @@ pub(crate) struct Cli {
     pub(crate) force: Option<bool>,
 
     /// Root folder of dotfiles
-    #[clap(long, action, global = true, env = "DOD_CONFIG_ROOT")]
-    pub(crate) config_root: Option<PathBuf>,
+    #[clap(long, action, global = true, env = "DOD_DOTFILES_ROOT")]
+    pub(crate) dotfiles_root: Option<PathBuf>,
 
     /// Root folder of Dotedeploy modules
     #[clap(long, action, global = true, env = "DOD_MODULES_ROOT")]

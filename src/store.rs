@@ -378,11 +378,11 @@ mod tests {
 
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_dir.path().to_str().unwrap()],
+            &["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
 
         // --
         // * Test creating new directory

@@ -100,11 +100,11 @@ mod tests {
         // Test with elevated permissions
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_file.path().to_str().unwrap()],
+            &["root:root", temp_file.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_file.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_file.path().to_str().unwrap()], None).await?;
 
         let checksum_sudo = calculate_sha256_checksum(&temp_file).await?;
         assert_eq!(checksum, checksum_sudo);

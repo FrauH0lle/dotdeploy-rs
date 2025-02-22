@@ -230,11 +230,11 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new()?;
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_file.path().to_str().unwrap()],
+            &["root:root", temp_file.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["644", &temp_file.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["644", temp_file.path().to_str().unwrap()], None).await?;
 
         let meta = get_file_metadata(temp_file.path()).await?;
         assert_eq!(meta.uid, Some(0));
@@ -249,7 +249,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let temp_link = temp_dir.path().join("foo.txt");
         fs::symlink(temp_file.path(), &temp_link).await?;
-        sudo::sudo_exec("chown", &["root:root", &temp_link.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chown", &["root:root", temp_link.to_str().unwrap()], None).await?;
         let meta = get_file_metadata(&temp_link).await?;
         assert_eq!(
             file_permissions::perms_int_to_str(meta.permissions.unwrap())?,

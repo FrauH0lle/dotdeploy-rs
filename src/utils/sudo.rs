@@ -155,7 +155,7 @@ Check the value of the variable `use_sudo` in `$HOME/.config/dotdeploy/config.to
 #[instrument]
 fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
     debug!(
-        cmd = format!("{} {}", &sudo.cmd(), format_args(&sudo.initial_flags())),
+        cmd = format!("{} {}", &sudo.cmd(), format_args(sudo.initial_flags())),
         "Executing privilege elevation command"
     );
 
@@ -197,7 +197,7 @@ fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
 #[instrument]
 fn update_sudo(sudo: &GetRootCmd) -> Result<()> {
     debug!(
-        cmd = format!("{} {}", &sudo.cmd(), format_args(&sudo.keepalive_flags())),
+        cmd = format!("{} {}", &sudo.cmd(), format_args(sudo.keepalive_flags())),
         "Updating privileges"
     );
     let status = Command::new(sudo.cmd())
@@ -262,11 +262,11 @@ pub(crate) async fn sudo_exec<S: AsRef<OsStr>>(
     if exec.wait().await?.success() {
         Ok(())
     } else {
-        return Err(eyre!(
+        Err(eyre!(
             "Failed to execute sudo {} {}",
             cmd,
             format_args(args)
-        ));
+        ))
     }
 }
 

@@ -75,29 +75,29 @@ mod tests {
         let user_store = init_sqlite_store(&config, false).await?;
 
         // Insert a module
-        let test_module = StoreModule {
-            name: "test".to_string(),
-            location: "/testpath".to_string(),
-            user: Some("user".to_string()),
-            reason: "manual".to_string(),
-            depends: None,
-            date: chrono::offset::Utc::now(),
-        };
+        let test_module = StoreModule::new(
+            "test".to_string(),
+            "/testpath".to_string(),
+            Some("user".to_string()),
+            "manual".to_string(),
+            None,
+            chrono::offset::Utc::now(),
+        );
 
         user_store.add_module(test_module).await?;
 
         // Test input
         let local_time = chrono::offset::Utc::now();
-        let test_file = StoreFile {
-            module: "test".to_string(),
-            source: Some("/dotfiles/foo.txt".to_string()),
-            source_checksum: Some("abc123".to_string()),
-            destination: "/home/foo.txt".to_string(),
-            destination_checksum: Some("abc123".to_string()),
-            operation: "link".to_string(),
-            user: Some(env::var("USER")?),
-            date: local_time,
-        };
+        let test_file = StoreFile::new(
+            "test".to_string(),
+            Some("/dotfiles/foo.txt".to_string()),
+            Some("abc123".to_string()),
+            "/home/foo.txt".to_string(),
+            Some("abc123".to_string()),
+            "link".to_string(),
+            Some(env::var("USER")?),
+            local_time,
+        );
 
         user_store.add_file(test_file.clone()).await?;
 

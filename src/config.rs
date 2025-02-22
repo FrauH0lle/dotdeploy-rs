@@ -3,7 +3,7 @@
 //! It provides functionality to read, parse, and initialize the configuration from a TOML file or
 //! use default values when necessary.
 
-use color_eyre::{eyre::WrapErr, Result};
+use color_eyre::{Result, eyre::WrapErr};
 use serde::Deserialize;
 use std::env;
 use std::io::BufRead;
@@ -23,7 +23,7 @@ use tracing::{debug, error, instrument};
 /// - `noconfirm`: false - Assume "yes" instead of prompting
 ///
 /// ## Paths
-/// - `config_root`: `"~/.dotfiles/"` - Root folder of dotfiles
+/// - `dotfiles_root`: `"~/.dotfiles/"` - Root folder of dotfiles
 /// - `modules_root`: `"~/.dotfiles/modules/"` - Root folder for module declarations
 /// - `hosts_root`: `"~/.dotfiles/hosts/"` - Root folder for host declarations
 /// - `user_store_path`: `"$XDG_DATA_HOME/dotdeploy"` or `"~/.local/share/dotdeploy"` - User store location
@@ -47,7 +47,7 @@ use tracing::{debug, error, instrument};
 /// To override options, your `config.toml` might look like this:
 ///
 /// ```toml
-/// config_root = "/path/to/my/dotfiles"
+/// dotfiles_root = "/path/to/my/dotfiles"
 /// modules_root = "/path/to/my/dotfiles/modules"
 /// hosts_root = "/path/to/my/dotfiles/hosts"
 /// use_sudo = true
@@ -62,7 +62,7 @@ pub(crate) struct DotdeployConfig {
     /// Assume "yes" instead of prompting
     pub(crate) noconfirm: bool,
     /// Root folder of dotfiles.
-    pub(crate) config_root: PathBuf,
+    pub(crate) dotfiles_root: PathBuf,
     /// Root folder of Dotedeploy modules. This path stores the module declarations.
     pub(crate) modules_root: PathBuf,
     /// Root folder of Dotedeploy hosts. This path stores the hosts declarations.
@@ -94,7 +94,7 @@ impl DotdeployConfig {
         dry_run: bool,
         force: bool,
         noconfirm: bool,
-        config_root: PathBuf,
+        dotfiles_root: PathBuf,
         modules_root: PathBuf,
         hosts_root: PathBuf,
         hostname: String,
@@ -112,7 +112,7 @@ impl DotdeployConfig {
             dry_run,
             force,
             noconfirm,
-            config_root,
+            dotfiles_root,
             modules_root,
             hosts_root,
             hostname,
@@ -175,20 +175,18 @@ impl DotdeployConfig {
             Ok(file) => {
                 let reader = std::io::BufReader::new(file);
                 // Iterate through lines of /etc/os-release
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        if line.starts_with("ID=") {
-                            // Extract and return the distribution ID
-                            distro_string
-                                .push_str(line.trim_start_matches("ID=").trim_matches('"').trim());
-                        } else if line.starts_with("VERSION_ID=") {
-                            // Extract and return the distribution version ID
-                            distro_version_string.push_str(
-                                line.trim_start_matches("VERSION_ID=")
-                                    .trim_matches('"')
-                                    .trim(),
-                            );
-                        }
+                for line in reader.lines().map_while(Result::ok) {
+                    if line.starts_with("ID=") {
+                        // Extract and return the distribution ID
+                        distro_string
+                            .push_str(line.trim_start_matches("ID=").trim_matches('"').trim());
+                    } else if line.starts_with("VERSION_ID=") {
+                        // Extract and return the distribution version ID
+                        distro_version_string.push_str(
+                            line.trim_start_matches("VERSION_ID=")
+                                .trim_matches('"')
+                                .trim(),
+                        );
                     }
                 }
                 // If ID field is not found, return "unknown"
@@ -255,7 +253,7 @@ impl DotdeployConfig {
         struct ParsedFile {
             dry_run: Option<bool>,
             force: Option<bool>,
-            config_root: Option<String>,
+            dotfiles_root: Option<String>,
             modules_root: Option<String>,
             hosts_root: Option<String>,
             hostname: Option<String>,
@@ -274,9 +272,9 @@ impl DotdeployConfig {
         // Parse the configuration string
         let parsed_data: ParsedFile = toml::from_str(&conf_string)?;
 
-        // Set config_root to ~/.dotfiles if empty
-        let config_root = parsed_data
-            .config_root
+        // Set dotfiles_root to ~/.dotfiles if empty
+        let dotfiles_root = parsed_data
+            .dotfiles_root
             .map(|path| {
                 shellexpand::full(&path)
                     .wrap_err("Failed to expand file path")
@@ -285,7 +283,7 @@ impl DotdeployConfig {
             })
             .unwrap_or_else(|| shellexpand::full("~/.dotfiles").unwrap().to_string());
 
-        // Set modules_root based on config_root if not already set
+        // Set modules_root based on dotfiles_root if not already set
         let modules_root = parsed_data
             .modules_root
             .map(|path| {
@@ -295,13 +293,13 @@ impl DotdeployConfig {
                     .to_string()
             })
             .unwrap_or_else(|| {
-                PathBuf::from(&config_root)
+                PathBuf::from(&dotfiles_root)
                     .join("modules")
                     .to_string_lossy()
                     .to_string()
             });
 
-        // Set hosts_root based on config_root if not already set
+        // Set hosts_root based on dotfiles_root if not already set
         let hosts_root = parsed_data
             .hosts_root
             .map(|path| {
@@ -311,7 +309,7 @@ impl DotdeployConfig {
                     .to_string()
             })
             .unwrap_or_else(|| {
-                PathBuf::from(&config_root)
+                PathBuf::from(&dotfiles_root)
                     .join("hosts")
                     .to_string_lossy()
                     .to_string()
@@ -322,7 +320,7 @@ impl DotdeployConfig {
             parsed_data.dry_run.unwrap_or(false),
             parsed_data.force.unwrap_or(false),
             parsed_data.noconfirm.unwrap_or(false),
-            PathBuf::from(config_root),
+            PathBuf::from(dotfiles_root),
             PathBuf::from(modules_root),
             PathBuf::from(hosts_root),
             parsed_data
@@ -371,7 +369,7 @@ mod tests {
     /// Test configuration struct used in unit tests
     #[derive(Serialize)]
     struct TestConf {
-        config_root: Option<String>,
+        dotfiles_root: Option<String>,
         modules_root: Option<String>,
         hosts_root: Option<String>,
     }
@@ -384,8 +382,8 @@ mod tests {
     impl Drop for EnvGuard<'_> {
         fn drop(&mut self) {
             match &self.original {
-                Some(val) => env::set_var(self.key, val),
-                None => env::remove_var(self.key),
+                Some(val) => unsafe { env::set_var(self.key, val) },
+                None => unsafe { env::remove_var(self.key) },
             }
         }
     }
@@ -394,7 +392,7 @@ mod tests {
     /// original value when dropped.
     fn set_env_var<'a>(key: &'a str, value: &str) -> EnvGuard<'a> {
         let original = env::var(key).ok();
-        env::set_var(key, value);
+        unsafe { env::set_var(key, value) };
 
         EnvGuard { key, original }
     }
@@ -421,7 +419,7 @@ mod tests {
         let conf = DotdeployConfig::init()?;
 
         assert_eq!(
-            conf.config_root,
+            conf.dotfiles_root,
             PathBuf::from(shellexpand::full("~/.dotfiles").unwrap().to_string())
         );
         assert_eq!(
@@ -451,7 +449,7 @@ mod tests {
         let _guard = set_env_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
 
         let test_config = TestConf {
-            config_root: Some("/tmp".to_string()),
+            dotfiles_root: Some("/tmp".to_string()),
             modules_root: None,
             hosts_root: None,
         };
@@ -459,7 +457,7 @@ mod tests {
 
         let conf = DotdeployConfig::init()?;
 
-        assert_eq!(conf.config_root, PathBuf::from("/tmp"));
+        assert_eq!(conf.dotfiles_root, PathBuf::from("/tmp"));
         assert_eq!(conf.modules_root, PathBuf::from("/tmp/modules"));
         assert_eq!(conf.hosts_root, PathBuf::from("/tmp/hosts"));
 
@@ -472,14 +470,14 @@ mod tests {
         let _guard = set_env_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
 
         let test_config = TestConf {
-            config_root: Some("/foo".to_string()),
+            dotfiles_root: Some("/foo".to_string()),
             modules_root: Some("/bar".to_string()),
             hosts_root: Some("/baz".to_string()),
         };
         create_config_file(&temp_dir, &test_config)?;
 
         let conf = DotdeployConfig::init()?;
-        assert_eq!(conf.config_root, PathBuf::from("/foo"));
+        assert_eq!(conf.dotfiles_root, PathBuf::from("/foo"));
         assert_eq!(conf.modules_root, PathBuf::from("/bar"));
         assert_eq!(conf.hosts_root, PathBuf::from("/baz"));
 

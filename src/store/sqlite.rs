@@ -59,8 +59,8 @@ impl SQLiteStore {
 /// * `system` - A boolean indicating whether this is a system-wide store (true) or user-specific
 ///   store (false).
 ///
-/// # Returns
-/// Returns `Ok(SQLiteStore)` if the store is successfully initialized, or an error if:
+/// # Errors
+/// Returns an error if:
 /// - Directory creation fails
 /// - Database initialization fails
 /// - Connection pool setup fails
@@ -82,7 +82,7 @@ pub(crate) async fn init_sqlite_store(
     };
 
     // Create the connection pool
-    let pool = init_pool(config, &path)
+    let pool = init_pool(config, path)
         .await
         .wrap_err_with(|| format!("Failed to initialize user store in {}", &path.display()))
         .suggestion(format!(
@@ -112,12 +112,11 @@ pub(crate) async fn init_sqlite_store(
 /// * `config` - Configuration settings including system file deployment options
 /// * `path` - Base directory path where the SQLite database file will be created
 ///
-/// # Returns
-/// * `Ok(SqlitePool)` - Configured and initialized connection pool
-/// * `Err` - If database creation, migration, or pool setup fails
+/// # Errors
+/// Returns an error if database creation, migration, or pool setup fails.
 async fn init_pool(
     config: &DotdeployConfig,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<(sqlite::SqlitePool, PathBuf)> {
     // Set the full path for the SQLite database file
     let path = path.join("store.sqlite");
@@ -248,7 +247,14 @@ impl Store for SQLiteStore {
             r#"
 INSERT INTO modules (name, location, user, reason, depends, date)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-ON CONFLICT(name) DO NOTHING
+ON CONFLICT(name)
+DO UPDATE SET
+  name = excluded.name,
+  location = excluded.location,
+  user = excluded.user,
+  reason = excluded.reason,
+  depends = excluded.depends,
+  date = excluded.date
             "#,
             module.name,
             module.location,

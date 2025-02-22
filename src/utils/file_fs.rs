@@ -92,21 +92,21 @@ pub(crate) async fn check_file_exists<P: AsRef<Path>>(path: P) -> Result<bool> {
 pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>) -> Result<bool> {
     match fs::symlink_metadata(path.as_ref()).await {
         Ok(meta) => {
-            if let Some(s) = source {
+            match source { Some(s) => {
                 if meta.is_symlink() {
                     let orig = fs::read_link(path).await?;
-                    Ok(&orig == s.as_ref())
+                    Ok(orig == *s.as_ref())
                 } else {
                     Ok(false)
                 }
-            } else {
+            } _ => {
                 Ok(meta.is_symlink())
-            }
+            }}
         }
 
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             // If permission is denied, use sudo for the check
-            if let Some(s) = source {
+            match source { Some(s) => {
                 if sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await? {
                     let orig = String::from_utf8(
                         sudo::sudo_exec_output("readlink", &[path_to_string(&path)?], None)
@@ -115,13 +115,13 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
                     )?
                     .trim()
                     .to_string();
-                    Ok(&orig.as_ref() == s.as_ref())
+                    Ok(orig.as_ref() == *s.as_ref())
                 } else {
                     Ok(false)
                 }
-            } else {
+            } _ => {
                 Ok(sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await?)
-            }
+            }}
         }
         Err(e) => {
             Err(e).wrap_err_with(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
@@ -323,11 +323,11 @@ mod tests {
         fs::File::create(&temp_file).await?;
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_dir.path().to_str().unwrap()],
+            &["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
         assert!(check_file_exists(temp_file).await?);
         assert!(!check_file_exists(temp_dir.path().join("doesnotexist.txt")).await?);
         Ok(())
@@ -355,11 +355,11 @@ mod tests {
 
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_dir.path().to_str().unwrap()],
+            &["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
 
         assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
         assert!(check_link_exists(&temp_link, None).await?);
@@ -421,11 +421,11 @@ mod tests {
 
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_dir.path().to_str().unwrap()],
+            &["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_dir.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
 
         ensure_dir_exists(&target).await?;
         assert!(check_file_exists(&target).await?);
@@ -451,11 +451,11 @@ mod tests {
 
         sudo::sudo_exec(
             "chown",
-            &["root:root", &temp_file.path().to_str().unwrap()],
+            &["root:root", temp_file.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", &temp_file.path().to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_file.path().to_str().unwrap()], None).await?;
 
         assert!(check_file_exists(&temp_file).await?);
         assert!(delete_file(&temp_file).await.is_ok());
@@ -506,10 +506,10 @@ mod tests {
         // Create a file
         fs::write(&temp_path1.join("text.txt"), "hi").await?;
         // Change owner and permissions
-        sudo::sudo_exec("chown", &["root:root", &temp_path1.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chown", &["root:root", &temp_path2.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chmod", &["600", &temp_path1.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chmod", &["600", &temp_path2.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chown", &["root:root", temp_path1.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chown", &["root:root", temp_path2.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_path1.to_str().unwrap()], None).await?;
+        sudo::sudo_exec("chmod", &["600", temp_path2.to_str().unwrap()], None).await?;
 
         // Try to delete non-empty dir
         delete_parents(&temp_path1.join("text.txt"), true).await?;
@@ -517,7 +517,7 @@ mod tests {
         // Remove file and try again
         sudo::sudo_exec(
             "rm",
-            &["-f", &temp_path1.join("text.txt").to_str().unwrap()],
+            &["-f", temp_path1.join("text.txt").to_str().unwrap()],
             None,
         )
         .await?;
