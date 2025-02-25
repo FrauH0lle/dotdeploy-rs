@@ -1,7 +1,10 @@
-use color_eyre::{eyre::WrapErr, Result};
+use color_eyre::{Result, eyre::WrapErr};
+use config::DotdeployConfigBuilder;
+use logs::Logger;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use tracing::{debug, instrument};
+use utils::sudo::PrivilegeManager;
 
 mod cli;
 mod config;
@@ -37,9 +40,20 @@ fn main() {
     // Initialize color_eyre
     color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
 
+    let dotdeploy_config = match init_config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to initialize config. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+
     // Initialize logging
     let logger = match logs::LoggerBuilder::new()
         .with_verbosity(cli::get_cli().verbosity)
+        .with_log_dir(&dotdeploy_config.logs_dir)
+        .with_max_logs(dotdeploy_config.logs_max)
         .build()
     {
         Ok(logger) => logger,
@@ -58,16 +72,11 @@ fn main() {
         }
     };
 
-    let dotdeploy_config = match init_config() {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to initialize config. Exiting");
-            eprintln!("{:?}", e);
-            std::process::exit(1);
-        }
-    };
+    debug!("Config initialized:\n{:#?}", &dotdeploy_config);
 
-    match run(dotdeploy_config) {
+    export_env_vars(&dotdeploy_config);
+
+    match run(dotdeploy_config, logger) {
         Ok(success) if success => std::process::exit(0),
         Ok(_) => std::process::exit(1),
         Err(e) => {
@@ -83,70 +92,51 @@ fn main() {
 /// 1. Parsing CLI arguments
 /// 2. Loading configuration from file (if present)
 /// 3. Merging CLI arguments with file configuration
-/// 4. Setting environment variables for (nearly) all configuration values
-/// 5. Returning the final configuration
+/// 4. Returning the final configuration
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - Configuration file parsing fails
 /// - Required paths or values are missing
-#[instrument]
 fn init_config() -> Result<config::DotdeployConfig> {
     let cli = cli::get_cli();
 
-    // Read config from file, if any
-    let mut dotdeploy_config =
-        config::DotdeployConfig::init().wrap_err("Failed to initialize Dotdeploy config")?;
+    // Initialize config and merge CLI args into config
+    let dotdeploy_config = DotdeployConfigBuilder::new()
+        .with_dry_run(cli.dry_run)
+        .with_force(cli.force)
+        .with_noconfirm(cli.noconfirm)
+        .with_config_root(cli.config_root)
+        .with_dotfiles_root(cli.dotfiles_root)
+        .with_modules_root(cli.modules_root)
+        .with_hosts_root(cli.hosts_root)
+        .with_hostname(cli.hostname)
+        .with_distribution(cli.distribution)
+        .with_use_sudo(cli.use_sudo)
+        .with_deploy_sys_files(cli.deploy_sys_files)
+        .with_install_pkg_cmd(cli.install_pkg_cmd)
+        .with_remove_pkg_cmd(cli.remove_pkg_cmd)
+        .with_skip_pkg_install(cli.skip_pkg_install)
+        .with_user_store_path(cli.user_store)
+        .with_system_store_path(cli.system_store)
+        .with_logs_dir(cli.logs_dir)
+        .with_logs_max(cli.logs_max)
+        .build(cli.verbosity)?;
 
-    // Merge CLI args into config
-    if let Some(flag) = cli.dry_run {
-        dotdeploy_config.dry_run = flag;
-    }
-    if let Some(flag) = cli.force {
-        dotdeploy_config.force = flag;
-    }
-    if let Some(flag) = cli.noconfirm {
-        dotdeploy_config.noconfirm = flag;
-    }
-    if let Some(path) = cli.dotfiles_root {
-        dotdeploy_config.dotfiles_root = path;
-    }
-    if let Some(path) = cli.modules_root {
-        dotdeploy_config.modules_root = path;
-    }
-    if let Some(path) = cli.hosts_root {
-        dotdeploy_config.hosts_root = path;
-    }
-    if let Some(name) = cli.hostname {
-        dotdeploy_config.hostname = name;
-    }
-    if let Some(name) = cli.distribution {
-        dotdeploy_config.distribution = name;
-    }
-    if let Some(flag) = cli.use_sudo {
-        dotdeploy_config.use_sudo = flag;
-    }
-    if let Some(flag) = cli.deploy_sys_files {
-        dotdeploy_config.deploy_sys_files = flag;
-    }
-    if cli.install_pkg_cmd.is_some() {
-        dotdeploy_config.install_pkg_cmd = cli.install_pkg_cmd;
-    }
-    if cli.remove_pkg_cmd.is_some() {
-        dotdeploy_config.remove_pkg_cmd = cli.remove_pkg_cmd;
-    }
-    if let Some(flag) = cli.skip_pkg_install {
-        dotdeploy_config.skip_pkg_install = flag;
-    }
-    if let Some(path) = cli.user_store {
-        dotdeploy_config.user_store_path = path;
-    }
-    if let Some(path) = cli.system_store {
-        dotdeploy_config.system_store_path = path;
+    // Set USE_SUDO
+    USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
+    if USE_SUDO.load(Ordering::Relaxed) {
+        let _ = SUDO_CMD.set(dotdeploy_config.sudo_cmd.clone());
     }
 
-    // Make config available as environment variables
+    Ok(dotdeploy_config)
+}
+
+/// Make config available as environment variables.
+///
+/// For nearly all configuration values, a corresponding environment variable will be set.
+fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) {
     unsafe {
         std::env::set_var("DOD_DRY_RUN", dotdeploy_config.dry_run.to_string());
         std::env::set_var("DOD_FORCE", dotdeploy_config.force.to_string());
@@ -168,21 +158,21 @@ fn init_config() -> Result<config::DotdeployConfig> {
         std::env::set_var("DOD_USER_STORE", &dotdeploy_config.user_store_path);
         std::env::set_var("DOD_SYSTEM_STORE", &dotdeploy_config.system_store_path);
     }
-
-    // Set USE_SUDO
-    USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
-    if USE_SUDO.load(Ordering::Relaxed) {
-        let _ = SUDO_CMD.set(dotdeploy_config.sudo_cmd.clone());
-    }
-
-    debug!("Config initialized:\n{:#?}", &dotdeploy_config);
-
-    Ok(dotdeploy_config)
 }
 
 #[tokio::main]
 #[instrument]
-async fn run(config: config::DotdeployConfig) -> Result<bool> {
+async fn run(config: config::DotdeployConfig, logger: Logger) -> Result<bool> {
+    let privilege_ctx = utils::sudo::PrivilegeManagerBuilder::new()
+        .with_use_sudo(config.use_sudo)
+        .with_root_cmd(match config.sudo_cmd.as_str() {
+            "sudo" => utils::sudo::GetRootCmd::use_sudo(),
+            "doas" => utils::sudo::GetRootCmd::use_doas(),
+            _ => unreachable!("Unsupported privilege elevation command"),
+        })
+        .with_terminal_lock(logger.terminal_lock)
+        .build()?;
+
     let stores = store::Stores::new(&config)
         .await
         .wrap_err("Failed to initialize stores")?;

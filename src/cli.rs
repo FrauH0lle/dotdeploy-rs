@@ -25,6 +25,10 @@ pub(crate) struct Cli {
     #[clap(long, short, action, global = true, env = "DOD_FORCE")]
     pub(crate) force: Option<bool>,
 
+    /// Dotdeploy config folder
+    #[clap(long, action, global = true, env = "DOD_CONFIG_ROOT")]
+    pub(crate) config_root: Option<PathBuf>,
+
     /// Root folder of dotfiles
     #[clap(long, action, global = true, env = "DOD_DOTFILES_ROOT")]
     pub(crate) dotfiles_root: Option<PathBuf>,
@@ -85,6 +89,14 @@ pub(crate) struct Cli {
         global = true, env = "DOD_VERBOSE"
     )]
     pub(crate) verbosity: u8,
+
+    /// Directory of log files
+    #[clap(long, action, global = true, env = "DOD_LOGS_DIR")]
+    pub(crate) logs_dir: Option<PathBuf>,
+
+    /// Directory of log files
+    #[clap(long, action, global = true, env = "DOD_LOGS_MAX")]
+    pub(crate) logs_max: Option<usize>,
 }
 
 /// Available subcommands for dotdeploy

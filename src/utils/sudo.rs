@@ -7,17 +7,70 @@
 //! The module is adapted from: <https://github.com/Morganamilo/paru/blob/5355012aa3529014145b8940dd0c62b21e53095a/src/exec.rs#L144>
 
 use crate::{SUDO_CMD, TERMINAL_LOCK};
-use color_eyre::eyre::{eyre, WrapErr};
+use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Result, Section};
 use std::ffi::OsStr;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, instrument};
+
+#[derive(Debug)]
+pub(crate) struct PrivilegeManager {
+    use_sudo: bool,
+    root_cmd: GetRootCmd,
+    terminal_lock: Arc<RwLock<()>>,
+    sudo_lock: Arc<Mutex<()>>,
+    loop_running: bool
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PrivilegeManagerBuilder {
+    use_sudo: Option<bool>,
+    root_cmd: Option<GetRootCmd>,
+    terminal_lock: Option<Arc<RwLock<()>>>,
+}
+
+impl PrivilegeManagerBuilder {
+    pub(crate) fn new() -> Self {
+        PrivilegeManagerBuilder::default()
+    }
+
+    pub(crate) fn with_use_sudo(&mut self, use_sudo: bool) -> &mut Self {
+        let new = self;
+        new.use_sudo = Some(use_sudo);
+        new
+    }
+
+    pub(crate) fn with_root_cmd(&mut self, root_cmd: GetRootCmd) -> &mut Self {
+        let new = self;
+        new.root_cmd = Some(root_cmd);
+        new
+    }
+
+    pub(crate) fn with_terminal_lock(&mut self, terminal_lock: Arc<RwLock<()>>) -> &mut Self {
+        let new = self;
+        new.terminal_lock = Some(terminal_lock);
+        new
+    }
+
+    pub(crate) fn build(&self) -> Result<PrivilegeManager> {
+        Ok(PrivilegeManager {
+            use_sudo: Clone::clone(self.use_sudo.as_ref().ok_or_eyre("Empty builder field")?),
+            root_cmd: Clone::clone(self.root_cmd.as_ref().ok_or_eyre("Empty builder field")?),
+            terminal_lock: Clone::clone(
+                self.terminal_lock
+                    .as_ref()
+                    .ok_or_eyre("Empty builder field")?,
+            ),
+        })
+    }
+}
 
 // -------------------------------------------------------------------------------------------------
 // Global Variables
@@ -38,8 +91,13 @@ static SUDO_MUTEX: LazyLock<Arc<Mutex<()>>> = LazyLock::new(|| Arc::new(Mutex::n
 //   it.
 
 #[derive(Debug, Clone)]
-enum GetRootCmd {
+pub(crate) enum GetRootCmd {
     Sudo {
+        cmd: String,
+        initial_flags: Vec<String>,
+        keepalive_flags: Vec<String>,
+    },
+    Doas {
         cmd: String,
         initial_flags: Vec<String>,
         keepalive_flags: Vec<String>,
@@ -48,14 +106,20 @@ enum GetRootCmd {
 
 impl GetRootCmd {
     /// Creates a new GetRootCmd instance configured for sudo usage.
-    ///
-    /// Returns a GetRootCmd::Sudo variant with default flags for initial authentication and session
-    /// keepalive.
-    fn use_sudo() -> Self {
+    pub(crate) fn use_sudo() -> Self {
         GetRootCmd::Sudo {
             cmd: "sudo".to_string(),
             initial_flags: vec!["-v".to_string()],
             keepalive_flags: vec!["-v".to_string(), "-n".to_string()],
+        }
+    }
+
+    /// Creates a new GetRootCmd instance configured for doas usage.
+    pub(crate) fn use_doas() -> Self {
+        GetRootCmd::Doas {
+            cmd: "doas".to_string(),
+            initial_flags: vec![],
+            keepalive_flags: vec!["-n".to_string()],
         }
     }
 
@@ -65,6 +129,7 @@ impl GetRootCmd {
     fn cmd(&self) -> &str {
         match self {
             GetRootCmd::Sudo { cmd, .. } => cmd,
+            GetRootCmd::Doas { cmd, .. } => cmd,
         }
     }
 
@@ -74,6 +139,7 @@ impl GetRootCmd {
     fn initial_flags(&self) -> &[String] {
         match self {
             GetRootCmd::Sudo { initial_flags, .. } => initial_flags,
+            GetRootCmd::Doas { initial_flags, .. } => initial_flags,
         }
     }
 
@@ -83,6 +149,9 @@ impl GetRootCmd {
     fn keepalive_flags(&self) -> &[String] {
         match self {
             GetRootCmd::Sudo {
+                keepalive_flags, ..
+            } => keepalive_flags,
+            GetRootCmd::Doas {
                 keepalive_flags, ..
             } => keepalive_flags,
         }
@@ -118,8 +187,10 @@ pub(crate) async fn spawn_sudo_maybe<S: AsRef<str> + std::fmt::Debug>(reason: S)
                 let sudo_cmd = match SUDO_CMD.get() {
                     Some(cmd) if cmd == "sudo" => GetRootCmd::use_sudo(),
                     Some(_) => return Err(eyre!("Unknown 'sudo' command")),
-                    None => return Err(eyre!("'sudo' command not set")
-                        .suggestion("Check the value of 'sudo_cmd' in the dotdeploy config")),
+                    None => {
+                        return Err(eyre!("'sudo' command not set")
+                            .suggestion("Check the value of 'sudo_cmd' in the dotdeploy config"));
+                    }
                 };
 
                 // Run sudo loop
@@ -173,10 +244,12 @@ fn sudo_loop(sudo: &GetRootCmd) -> Result<()> {
 
     debug!("Running sudo loop");
     let sudo_clone = sudo.clone();
-    let _handle = std::thread::spawn(move || loop {
-        let _ = update_sudo(&sudo_clone);
-        debug!("Privileges updated");
-        thread::sleep(Duration::from_secs(60));
+    let _handle = std::thread::spawn(move || {
+        loop {
+            let _ = update_sudo(&sudo_clone);
+            debug!("Privileges updated");
+            thread::sleep(Duration::from_secs(60));
+        }
     });
     Ok(())
 }

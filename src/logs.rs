@@ -5,16 +5,16 @@
 
 use chrono::Local;
 use color_eyre::eyre::OptionExt;
-use color_eyre::{eyre::WrapErr, Result};
+use color_eyre::{Result, eyre::WrapErr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::{fs, io};
-use tracing::{debug, instrument, Level};
+use tracing::{Level, debug, instrument};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 // -------------------------------------------------------------------------------------------------
 // Logger
@@ -252,20 +252,11 @@ impl LoggerBuilder {
 /// Uses XDG_DATA_HOME/dotdeploy/logs if available, otherwise defaults to
 /// ~/.local/share/dotdeploy/logs
 #[instrument]
-fn get_default_log_dir() -> Result<PathBuf> {
-    let log_dir = if let Ok(data_dir) = std::env::var("XDG_DATA_HOME") {
-        debug!(?data_dir, "Using XDG_DATA_HOME for log directory");
-        PathBuf::from(data_dir).join("dotdeploy").join("logs")
-    } else {
-        let home =
-            std::env::var("HOME").wrap_err("Failed to get HOME directory for log location")?;
-        debug!(?home, "Using HOME directory for log location");
-        PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("dotdeploy")
-            .join("logs")
-    };
+pub(crate) fn get_default_log_dir() -> Result<PathBuf> {
+    let log_dir = dirs::data_dir()
+        .ok_or_eyre("Failed to determine user's local data dir")?
+        .join("dotdeploy")
+        .join("logs");
 
     // Create directory if it doesn't exist
     fs::create_dir_all(&log_dir)
@@ -304,7 +295,10 @@ mod tests {
             File::create(&log_file)?;
         }
 
-        let logger = LoggerBuilder::new().with_verbosity(1).with_log_dir(temp_dir.path()).build()?;
+        let logger = LoggerBuilder::new()
+            .with_verbosity(1)
+            .with_log_dir(temp_dir.path())
+            .build()?;
 
         // Perform rotation
         logger.rotate_logs()?;
@@ -370,11 +364,11 @@ mod tests {
         assert_eq!(
             log_dir,
             temp_dir
-                    .path()
-                    .join(".local")
-                    .join("share")
-                    .join("dotdeploy")
-                    .join("logs"),
+                .path()
+                .join(".local")
+                .join("share")
+                .join("dotdeploy")
+                .join("logs"),
             "Should use HOME when XDG_DATA_HOME is not available"
         );
         // Restore old values

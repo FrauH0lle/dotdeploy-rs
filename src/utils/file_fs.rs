@@ -9,6 +9,7 @@ use crate::utils::common;
 use crate::utils::sudo;
 use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{instrument, warn};
@@ -46,6 +47,54 @@ pub(crate) fn path_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
         .to_string();
 
     Ok(path_str)
+}
+
+/// Expands a path string, resolving environment variables and tilde expressions.
+///
+/// This function takes a path and expands any environment variables (e.g., $HOME) and tilde
+/// expressions (~) within it.
+///
+/// # Arguments
+///
+/// * `path` - Any type that can be converted to a Path
+/// * `env` - Optional HashMap containing environment variable pairs to prepend to the default
+///           environment
+///
+/// # Errors
+///
+/// Returns an error if path contains invalid Unicode or environment variables cannot be expanded.
+pub(crate) fn expand_path<P: AsRef<Path>>(path: P, env: Option<HashMap<String, String>>) -> Result<PathBuf> {
+    // Convert path to string, handling Unicode conversion
+    let path_str = path
+        .as_ref()
+        .to_str()
+        .ok_or_else(|| eyre!("Path contains invalid UTF-8"))?;
+
+    let home_dir = || -> Option<String> {
+        let hd = dirs::home_dir()?;
+        path_to_string(hd).ok()
+    };
+
+    // Create variable lookup closure that checks custom env first, then system env
+    let context = |var: &str| -> Result<Option<String>, std::env::VarError> {
+        // Check custom environment variables first
+        if let Some(custom_env) = &env {
+            if let Some(value) = custom_env.get(var) {
+                return Ok(Some(value.clone()));
+            }
+        }
+        // Fall back to system environment variables
+        std::env::var(var).map(Some)
+    };
+
+    // Expand the path using shellexpand with custom context
+    let expanded = shellexpand::full_with_context(
+        path_str,
+        home_dir,
+        context
+    ).map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
+
+    Ok(PathBuf::from(expanded.as_ref()))
 }
 
 /// Checks if a file exists, using sudo if necessary due to permission issues.
@@ -282,13 +331,16 @@ pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Res
     Ok(())
 }
 
-//
+// -------------------------------------------------------------------------------------------------
 // Tests
+// -------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use color_eyre::eyre::OptionExt;
+
     use super::*;
-    use std::path::PathBuf;
+    use std::env;
 
     #[test]
     fn test_path_to_string() -> Result<()> {
@@ -305,6 +357,46 @@ mod tests {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
         assert!(path_to_string(PathBuf::from(OsString::from_vec(vec![255]))).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_path() -> Result<()> {
+        // Test with tilde expansion
+        let home = dirs::home_dir().ok_or_eyre("Failed to get HOME dir")?;
+        assert_eq!(
+            expand_path("~/test.txt", None)?,
+            PathBuf::from(format!("{}/test.txt", path_to_string(home)?))
+        );
+
+        // Test with environment variable
+        let mut env = HashMap::new();
+        env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
+        assert_eq!(
+            expand_path("$TEST_DIR/file.txt", Some(env))?,
+            PathBuf::from("/tmp/test/file.txt")
+        );
+
+        // Test with both tilde and env var
+        let home = dirs::home_dir().ok_or_eyre("Failed to get HOME dir")?;
+        let mut env = HashMap::new();
+        env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
+        assert_eq!(
+            expand_path("~/dir/$TEST_DIR/file.txt", Some(env))?,
+            PathBuf::from(format!("{}/dir/tmp/test/file.txt", path_to_string(home)?))
+        );
+
+        // Test with absolute path (no expansion needed)
+        assert_eq!(
+            expand_path("/absolute/path.txt", None)?,
+            PathBuf::from("/absolute/path.txt")
+        );
+
+        // Test with invalid UTF-8
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        assert!(expand_path(PathBuf::from(OsString::from_vec(vec![255])), None).is_err());
+
         Ok(())
     }
 
