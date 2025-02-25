@@ -68,6 +68,8 @@ impl PrivilegeManagerBuilder {
                     .as_ref()
                     .ok_or_eyre("Empty builder field")?,
             ),
+            sudo_lock: Arc::new(Mutex::new(())),
+            loop_running: false
         })
     }
 }
