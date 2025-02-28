@@ -15,11 +15,11 @@ pub(crate) struct StoreSourceFileChecksum {
 
 /// Represents a destination file checksum record from the store database
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct StoreDestFileChecksum {
+pub(crate) struct StoreTargetFileChecksum {
     /// Path to the file
-    pub(crate) destination: String,
+    pub(crate) target: String,
     /// Checksum of the file contents
-    pub(crate) destination_checksum: Option<String>,
+    pub(crate) target_checksum: Option<String>,
 }
 
 impl StoreSourceFileChecksum {
@@ -31,11 +31,11 @@ impl StoreSourceFileChecksum {
     }
 }
 
-impl StoreDestFileChecksum {
-    pub(crate) fn new(destination: String, destination_checksum: Option<String>) -> Self {
-        StoreDestFileChecksum {
-            destination,
-            destination_checksum,
+impl StoreTargetFileChecksum {
+    pub(crate) fn new(target: String, target_checksum: Option<String>) -> Self {
+        StoreTargetFileChecksum {
+            target,
+            target_checksum,
         }
     }
 }
@@ -46,8 +46,8 @@ impl StoreDestFileChecksum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::sqlite::tests::store_setup_helper;
     use crate::store::Store;
+    use crate::store::sqlite::tests::store_setup_helper;
     use color_eyre::Result;
 
     #[tokio::test]
@@ -58,36 +58,37 @@ mod tests {
         let result = store.get_source_checksum("/home/foo2.txt").await?;
         assert_eq!(
             result,
-            Some(StoreSourceFileChecksum::new(
+            StoreSourceFileChecksum::new(
                 Some("/dotfiles/foo2.txt".to_string()),
                 Some("source_checksum2".to_string())
-            ))
+            )
         );
-        let result = store.get_destination_checksum("/home/foo3.txt").await?;
+        let result = store.get_target_checksum("/home/foo3.txt").await?;
         assert_eq!(
             result,
-            Some(StoreDestFileChecksum::new(
+            StoreTargetFileChecksum::new(
                 "/home/foo3.txt".to_string(),
                 Some("dest_checksum3".to_string())
-            ))
+            )
         );
-        let result = store
-            .get_destination_checksum("/does/not/exist.txt")
-            .await?;
-        assert_eq!(result, None);
+        let result = store.get_target_checksum("/does/not/exist.txt").await?;
+        assert_eq!(
+            result,
+            StoreTargetFileChecksum::new("/does/not/exist.txt".to_string(), None)
+        );
 
         // Source file and source checksum missing
         let store = store_setup_helper("create").await?;
         let result = store.get_source_checksum("/home/foo2.txt").await?;
-        assert_eq!(result, Some(StoreSourceFileChecksum::new(None, None)));
+        assert_eq!(result, StoreSourceFileChecksum::new(None, None));
 
         // All checksums
         let store = store_setup_helper("create").await?;
-        let result = store.get_all_src_checksums().await?;
+        let result = store.get_all_source_checksums().await?;
         assert_eq!(result.len(), 0);
 
         let store = store_setup_helper("create").await?;
-        let result = store.get_all_dest_checksums().await?;
+        let result = store.get_all_target_checksums().await?;
         assert_eq!(result.len(), 5);
 
         Ok(())

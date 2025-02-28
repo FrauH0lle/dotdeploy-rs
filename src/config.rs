@@ -47,8 +47,8 @@ use std::path::{Path, PathBuf};
 /// - `deploy_sys_files`: true - Allow deploying files outside HOME
 ///
 /// ## Package Management
-/// - `install_pkg_cmd`: None - Uses distribution-appropriate commands
-/// - `remove_pkg_cmd`: None - Uses distribution-appropriate commands
+/// - `install_pkg_cmd`: None
+/// - `remove_pkg_cmd`: None
 /// - `skip_pkg_install`: false - Whether to skip package operations
 ///
 /// # Example Configuration
@@ -79,13 +79,13 @@ pub(crate) struct DotdeployConfig {
     pub(crate) hosts_root: PathBuf,
     /// Host device's hostname.
     pub(crate) hostname: String,
-    /// Host device's Linux distribution.
+    /// Host device's Linux distribution including version.
     pub(crate) distribution: String,
     /// Use sudo to elevate privileges.
     pub(crate) use_sudo: bool,
-    /// Use sudo to elevate privileges.
+    /// Command used for privilege elevation (sudo/doas/etc).
     pub(crate) sudo_cmd: String,
-    /// Deploy files to directories other than the user's HOME.
+    /// Allow deploying files outside user's HOME directory.
     pub(crate) deploy_sys_files: bool,
     /// Command used to install packages.
     pub(crate) install_pkg_cmd: Option<Vec<String>>,
@@ -210,7 +210,10 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    pub(crate) fn with_install_pkg_cmd(&mut self, install_pkg_cmd: Option<Vec<String>>) -> &mut Self {
+    pub(crate) fn with_install_pkg_cmd(
+        &mut self,
+        install_pkg_cmd: Option<Vec<String>>,
+    ) -> &mut Self {
         let new = self;
         new.install_pkg_cmd = install_pkg_cmd;
         new
@@ -234,7 +237,10 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    pub(crate) fn with_system_store_path(&mut self, system_store_path: Option<PathBuf>) -> &mut Self {
+    pub(crate) fn with_system_store_path(
+        &mut self,
+        system_store_path: Option<PathBuf>,
+    ) -> &mut Self {
         let new = self;
         new.system_store_path = system_store_path;
         new
@@ -265,9 +271,26 @@ impl DotdeployConfigBuilder {
 
         // Read and return the contents of the config file
         let config_file_content: String = std::fs::read_to_string(&config_file)
-            .wrap_err_with(|| format!("Failed to read config from {:?}", &config_file))?;
+            .wrap_err_with(|| format!("Failed to read config from {}", config_file.display()))?;
 
         Ok(config_file_content)
+    }
+
+    /// Helper function to expand a path from configuration
+    fn expand_config_path<F>(
+        value: &Option<PathBuf>,
+        parsed_value: &Option<PathBuf>,
+        default_fn: F,
+    ) -> Result<PathBuf>
+    where
+        F: FnOnce() -> Result<PathBuf>,
+    {
+        match value {
+            Some(path) => crate::utils::file_fs::expand_path(path, None),
+            None => parsed_value
+                .as_ref()
+                .map_or_else(default_fn, |p| crate::utils::file_fs::expand_path(p, None)),
+        }
     }
 
     pub(crate) fn build(&self, verbosity: u8) -> Result<DotdeployConfig> {
@@ -291,52 +314,42 @@ impl DotdeployConfigBuilder {
         };
         let parsed_data: DotdeployConfigBuilder = toml::from_str(&conf_string)?;
 
-        let dotfiles_root = match self.dotfiles_root {
-            Some(ref value) => crate::utils::file_fs::expand_path(value, None)?,
-            None => parsed_data.dotfiles_root.map_or_else(
-                || crate::utils::file_fs::expand_path("~/.dotfiles", None),
-                |p| crate::utils::file_fs::expand_path(&p, None),
-            )?,
-        };
+        // Define constants for default paths
+        const DEFAULT_DOTFILES_DIR: &str = "~/.dotfiles";
+        const DEFAULT_MODULES_DIR: &str = "modules";
+        const DEFAULT_HOSTS_DIR: &str = "hosts";
+        const DEFAULT_SYSTEM_STORE: &str = "/var/lib/dotdeploy";
 
-        let modules_root = match self.modules_root {
-            Some(ref value) => crate::utils::file_fs::expand_path(value, None)?,
-            None => parsed_data.modules_root.map_or_else(
-                || crate::utils::file_fs::expand_path(dotfiles_root.join("modules"), None),
-                |p| crate::utils::file_fs::expand_path(&p, None),
-            )?,
-        };
+        let dotfiles_root =
+            Self::expand_config_path(&self.dotfiles_root, &parsed_data.dotfiles_root, || {
+                crate::utils::file_fs::expand_path(DEFAULT_DOTFILES_DIR, None)
+            })?;
 
-        let hosts_root = match self.hosts_root {
-            Some(ref value) => crate::utils::file_fs::expand_path(value, None)?,
-            None => parsed_data.hosts_root.map_or_else(
-                || crate::utils::file_fs::expand_path(dotfiles_root.join("hosts"), None),
-                |p| crate::utils::file_fs::expand_path(&p, None),
-            )?,
-        };
+        let modules_root =
+            Self::expand_config_path(&self.modules_root, &parsed_data.modules_root, || {
+                crate::utils::file_fs::expand_path(dotfiles_root.join(DEFAULT_MODULES_DIR), None)
+            })?;
 
-        let user_store_path = match self.user_store_path {
-            Some(ref value) => crate::utils::file_fs::expand_path(value, None)?,
-            None => parsed_data.user_store_path.map_or_else(
-                || {
-                    crate::utils::file_fs::expand_path(
-                        dirs::data_dir()
-                            .ok_or_eyre("Could not determine user's data directory")?
-                            .join("dotdeploy"),
-                        None,
-                    )
-                },
-                |p| crate::utils::file_fs::expand_path(&p, None),
-            )?,
-        };
+        let hosts_root =
+            Self::expand_config_path(&self.hosts_root, &parsed_data.hosts_root, || {
+                crate::utils::file_fs::expand_path(dotfiles_root.join(DEFAULT_HOSTS_DIR), None)
+            })?;
 
-        let system_store_path = match self.system_store_path {
-            Some(ref value) => crate::utils::file_fs::expand_path(value, None)?,
-            None => parsed_data.system_store_path.map_or_else(
-                || crate::utils::file_fs::expand_path("/var/lib/dotdeploy", None),
-                |p| crate::utils::file_fs::expand_path(&p, None),
-            )?,
-        };
+        let user_store_path =
+            Self::expand_config_path(&self.user_store_path, &parsed_data.user_store_path, || {
+                crate::utils::file_fs::expand_path(
+                    dirs::data_dir()
+                        .ok_or_eyre("Could not determine user's data directory")?
+                        .join("dotdeploy"),
+                    None,
+                )
+            })?;
+
+        let system_store_path = Self::expand_config_path(
+            &self.system_store_path,
+            &parsed_data.system_store_path,
+            || crate::utils::file_fs::expand_path(DEFAULT_SYSTEM_STORE, None),
+        )?;
 
         Ok(DotdeployConfig {
             dry_run: self.dry_run.unwrap_or(parsed_data.dry_run.unwrap_or(false)),
@@ -397,7 +410,8 @@ impl DotdeployConfigBuilder {
 /// Checks `/etc/os-release` for the "ID" field and retrieves the value. Returns "unknown" if
 /// not successful.
 fn get_distro(verbosity: u8) -> Result<String> {
-    let os_release_file = std::fs::File::open("/etc/os-release");
+    let os_release_file =
+        std::fs::File::open("/etc/os-release").wrap_err("Failed to open '/etc/os-release'");
     let mut distro_string = String::new();
     let mut distro_version_string = String::new();
     match os_release_file {
@@ -489,32 +503,43 @@ mod tests {
     #[test]
     fn test_create_config_no_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let test_config = DotdeployConfigBuilder::new()
-            .with_config_root(Some(temp_dir.into_path()))
-            .build(0)?;
 
-        assert_eq!(
-            test_config.dotfiles_root,
-            temp_dir.into_path().join(".dotfiles")
-            // PathBuf::from(shellexpand::full("~/.dotfiles").unwrap().to_string())
-        );
-        assert_eq!(
-            test_config.modules_root,
-            PathBuf::from(
-                shellexpand::full("~/.dotfiles/modules")
-                    .unwrap()
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            test_config.hosts_root,
-            PathBuf::from(shellexpand::full("~/.dotfiles/hosts").unwrap().to_string())
-        );
+        temp_env::with_var("HOME", Some(temp_dir.path()), || -> Result<()> {
+            let test_config = DotdeployConfigBuilder::new()
+                .with_config_root(Some(PathBuf::from(temp_dir.path())))
+                .build(0)?;
 
-        assert!(!test_config.distribution.is_empty());
-        assert!(!test_config.hostname.is_empty());
-        assert!(test_config.use_sudo);
-        assert!(test_config.deploy_sys_files);
+            assert_eq!(
+                test_config.dotfiles_root,
+                PathBuf::from(temp_dir.path().join(".dotfiles")),
+                "Default dotfiles_root should be ~/.dotfiles"
+            );
+            assert_eq!(
+                test_config.modules_root,
+                PathBuf::from(temp_dir.path().join(".dotfiles").join("modules")),
+                "Default modules_root should be ~/.dotfiles/modules"
+            );
+            assert_eq!(
+                test_config.hosts_root,
+                PathBuf::from(temp_dir.path().join(".dotfiles").join("hosts")),
+                "Default hosts_root should be ~/.dotfiles/hosts"
+            );
+
+            assert!(
+                !test_config.distribution.is_empty(),
+                "Should detect distribution from OS or fallback to 'unknown'"
+            );
+            assert!(
+                !test_config.hostname.is_empty(),
+                "Should detect hostname via gethostname() or fallback to 'unknown'"
+            );
+            assert!(test_config.use_sudo, "use_sudo should default to true");
+            assert!(
+                test_config.deploy_sys_files,
+                "deploy_sys_files should default to true"
+            );
+            Ok(())
+        })?;
 
         Ok(())
     }
@@ -530,11 +555,23 @@ mod tests {
         create_config_file(&temp_dir, &test_config_content)?;
         let test_config = DotdeployConfigBuilder::new()
             .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
-            .build(3)?;
+            .build(0)?;
 
-        assert_eq!(test_config.dotfiles_root, PathBuf::from("/tmp"));
-        assert_eq!(test_config.modules_root, PathBuf::from("/tmp/modules"));
-        assert_eq!(test_config.hosts_root, PathBuf::from("/tmp/hosts"));
+        assert_eq!(
+            test_config.dotfiles_root,
+            PathBuf::from("/tmp"),
+            "dotfiles_root should be set from config file"
+        );
+        assert_eq!(
+            test_config.modules_root,
+            PathBuf::from("/tmp/modules"),
+            "modules_root should default to dotfiles_root/modules"
+        );
+        assert_eq!(
+            test_config.hosts_root,
+            PathBuf::from("/tmp/hosts"),
+            "hosts_root should default to dotfiles_root/hosts"
+        );
 
         Ok(())
     }
@@ -548,14 +585,28 @@ mod tests {
             modules_root: Some("/bar".to_string()),
             hosts_root: Some("/baz".to_string()),
         };
+
         create_config_file(&temp_dir, &test_config_content)?;
+
         let test_config = DotdeployConfigBuilder::new()
-            .with_config_root(Some(temp_dir.into_path()))
+            .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
             .build(0)?;
 
-        assert_eq!(test_config.dotfiles_root, PathBuf::from("/foo"));
-        assert_eq!(test_config.modules_root, PathBuf::from("/bar"));
-        assert_eq!(test_config.hosts_root, PathBuf::from("/baz"));
+        assert_eq!(
+            test_config.dotfiles_root,
+            PathBuf::from("/foo"),
+            "dotfiles_root should be set from config file"
+        );
+        assert_eq!(
+            test_config.modules_root,
+            PathBuf::from("/bar"),
+            "modules_root should be set from config file"
+        );
+        assert_eq!(
+            test_config.hosts_root,
+            PathBuf::from("/baz"),
+            "hosts_root should be set from config file"
+        );
 
         Ok(())
     }

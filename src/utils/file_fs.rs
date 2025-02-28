@@ -5,10 +5,10 @@
 //! functionality to elevate privileges when necessary, using sudo for operations that might require
 //! higher permissions.
 
+use crate::utils::FileUtils;
 use crate::utils::common;
-use crate::utils::sudo;
-use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
+use color_eyre::eyre::{WrapErr, eyre};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -23,10 +23,8 @@ use tracing::{instrument, warn};
 ///
 /// * `path` - Any type that can be converted to a Path.
 ///
-/// # Returns
-///
-/// * `Ok(String)` - The path as a valid Unicode string.
-/// * `Err` - If the path contains invalid Unicode characters.
+/// # Errors
+/// Returns an error if the path contains invalid Unicode characters.
 ///
 /// # Examples
 ///
@@ -51,25 +49,22 @@ pub(crate) fn path_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
 
 /// Expands a path string, resolving environment variables and tilde expressions.
 ///
-/// This function takes a path and expands any environment variables (e.g., $HOME) and tilde
+/// This function takes a string slice and expands any environment variables (e.g., $HOME) and tilde
 /// expressions (~) within it.
 ///
 /// # Arguments
 ///
-/// * `path` - Any type that can be converted to a Path
+/// * `path` - A str
 /// * `env` - Optional HashMap containing environment variable pairs to prepend to the default
 ///           environment
 ///
 /// # Errors
 ///
 /// Returns an error if path contains invalid Unicode or environment variables cannot be expanded.
-pub(crate) fn expand_path<P: AsRef<Path>>(path: P, env: Option<HashMap<String, String>>) -> Result<PathBuf> {
-    // Convert path to string, handling Unicode conversion
-    let path_str = path
-        .as_ref()
-        .to_str()
-        .ok_or_else(|| eyre!("Path contains invalid UTF-8"))?;
-
+pub(crate) fn expand_path_string(
+    path: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<String> {
     let home_dir = || -> Option<String> {
         let hd = dirs::home_dir()?;
         path_to_string(hd).ok()
@@ -88,93 +83,373 @@ pub(crate) fn expand_path<P: AsRef<Path>>(path: P, env: Option<HashMap<String, S
     };
 
     // Expand the path using shellexpand with custom context
-    let expanded = shellexpand::full_with_context(
-        path_str,
-        home_dir,
-        context
-    ).map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
+    let expanded = shellexpand::full_with_context(path, home_dir, context)
+        .map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
 
-    Ok(PathBuf::from(expanded.as_ref()))
+    Ok(expanded.to_string())
 }
 
-/// Checks if a file exists, using sudo if necessary due to permission issues.
+/// Expands a path string, resolving environment variables and tilde expressions.
 ///
-/// This function attempts to check file existence normally first, and if a permission error is
-/// encountered, it retries the operation using sudo.
+/// This function takes a path and expands any environment variables (e.g., $HOME) and tilde
+/// expressions (~) within it.
 ///
 /// # Arguments
 ///
-/// * `path` - The path to check for existence.
+/// * `path` - Any type that can be converted to a Path
+/// * `env` - Optional HashMap containing environment variable pairs to prepend to the default
+///           environment
 ///
-/// # Returns
+/// # Errors
 ///
-/// * `Ok(bool)` - True if the file exists, false otherwise.
-/// * `Err` - If an error occurs during the check (other than permission issues).
-pub(crate) async fn check_file_exists<P: AsRef<Path>>(path: P) -> Result<bool> {
-    match path.as_ref().try_exists() {
-        Ok(false) => Ok(false),
-        Ok(true) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            // If permission is denied, try using sudo
-            Ok(sudo::sudo_exec_success("test", &["-e", &path_to_string(path)?], None).await?)
-        }
-        Err(e) => {
-            Err(e).wrap_err_with(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
+/// Returns an error if path contains invalid Unicode or environment variables cannot be expanded.
+pub(crate) fn expand_path<P: AsRef<Path>>(
+    path: P,
+    env: Option<&HashMap<String, String>>,
+) -> Result<PathBuf> {
+    // Convert path to string, handling Unicode conversion
+    let path_str = path_to_string(path)?;
+    // Expand path string
+    let expanded = expand_path_string(&path_str, env)?;
+
+    Ok(PathBuf::from(expanded))
+}
+
+impl FileUtils {
+    /// Checks if a file exists, using sudo if necessary due to permission issues.
+    ///
+    /// This function attempts to check file existence normally first, and if a permission error is
+    /// encountered, it retries the operation using sudo.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to check for existence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during the check (other than permission issues).
+    pub(crate) async fn check_file_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
+        match path.as_ref().try_exists() {
+            Ok(false) => Ok(false),
+            Ok(true) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // If permission is denied, try using sudo
+                Ok(self
+                    .privilege_manager
+                    .sudo_exec_success("test", ["-e", &path_to_string(path)?], None)
+                    .await?)
+            }
+            Err(e) => Err(e)
+                .wrap_err_with(|| format!("Failed to check existence of {:?}", &path.as_ref()))?,
         }
     }
-}
 
-/// Checks if a symbolic link exists and optionally verifies its target.
-///
-/// This function checks for the existence of a symbolic link and can also verify if it points to a
-/// specific target. It uses sudo if necessary due to permission issues.
-///
-/// # Arguments
-///
-/// * `path` - The path to the potential symbolic link.
-/// * `source` - Optional. If provided, checks if the link points to this source.
-///
-/// # Returns
-///
-/// * `Ok(bool)` - True if the link exists (and points to the specified source, if provided).
-/// * `Err` - If an error occurs during the check.
-pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>) -> Result<bool> {
-    match fs::symlink_metadata(path.as_ref()).await {
-        Ok(meta) => {
-            match source { Some(s) => {
-                if meta.is_symlink() {
-                    let orig = fs::read_link(path).await?;
-                    Ok(orig == *s.as_ref())
-                } else {
-                    Ok(false)
+    /// Checks if a symbolic link exists and optionally verifies its target.
+    ///
+    /// This function checks for the existence of a symbolic link and can also verify if it points to a
+    /// specific target. It uses sudo if necessary due to permission issues.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the potential symbolic link.
+    /// * `source` - Optional. If provided, checks if the link points to this source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during the check.
+    pub(crate) async fn check_link_exists<P: AsRef<Path>>(
+        &self,
+        path: P,
+        source: Option<P>,
+    ) -> Result<bool> {
+        match fs::symlink_metadata(path.as_ref()).await {
+            Ok(meta) => match source {
+                Some(s) => {
+                    if meta.is_symlink() {
+                        let orig = fs::read_link(path).await?;
+                        Ok(orig == *s.as_ref())
+                    } else {
+                        Ok(false)
+                    }
                 }
-            } _ => {
-                Ok(meta.is_symlink())
-            }}
-        }
+                _ => Ok(meta.is_symlink()),
+            },
 
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            // If permission is denied, use sudo for the check
-            match source { Some(s) => {
-                if sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await? {
-                    let orig = String::from_utf8(
-                        sudo::sudo_exec_output("readlink", &[path_to_string(&path)?], None)
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // If permission is denied, use sudo for the check
+                match source {
+                    Some(s) => {
+                        if self
+                            .privilege_manager
+                            .sudo_exec_success("test", ["-L", &path_to_string(&path)?], None)
                             .await?
-                            .stdout,
-                    )?
-                    .trim()
-                    .to_string();
-                    Ok(orig.as_ref() == *s.as_ref())
-                } else {
-                    Ok(false)
+                        {
+                            let orig = String::from_utf8(
+                                self.privilege_manager
+                                    .sudo_exec_output(
+                                        "readlink",
+                                        [path_to_string(&path)?.as_str()],
+                                        None,
+                                    )
+                                    .await?
+                                    .stdout,
+                            )?
+                            .trim()
+                            .to_string();
+                            Ok(orig.as_ref() == *s.as_ref())
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                    _ => Ok(self
+                        .privilege_manager
+                        .sudo_exec_success("test", ["-L", &path_to_string(&path)?], None)
+                        .await?),
                 }
-            } _ => {
-                Ok(sudo::sudo_exec_success("test", &["-L", &path_to_string(&path)?], None).await?)
-            }}
+            }
+            Err(e) => Err(e)
+                .wrap_err_with(|| format!("Failed to check existence of {:?}", &path.as_ref()))?,
         }
-        Err(e) => {
-            Err(e).wrap_err_with(|| format!("Falied to check existence of {:?}", &path.as_ref()))?
+    }
+
+    /// Ensures that a directory exists, creating it if necessary, using sudo if needed.
+    ///
+    /// This function attempts to create a directory and all its parent directories. If a permission
+    /// error is encountered, it retries the operation using sudo.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path of the directory to ensure exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during the operation.
+    pub(crate) async fn ensure_dir_exists<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        match fs::create_dir_all(&path).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // If permission is denied, use sudo to create the directory
+                Ok(self
+                    .privilege_manager
+                    .sudo_exec("mkdir", ["-p", &path_to_string(&path)?], None)
+                    .await?)
+            }
+            Err(e) => Err(e).wrap_err_with(|| format!("Failed to create {:?}", &path.as_ref()))?,
         }
+    }
+
+    /// Copies a file, using sudo if necessary due to permission issues.
+    ///
+    /// This function attempts to copy a file normally first, and if a permission error is
+    /// encountered, it retries the operation using sudo.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Source path to copy from
+    /// * `to` - Destination path to copy to
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Source file cannot be read
+    /// - Destination directory cannot be created
+    /// - Copy operation fails even with elevated privileges
+    pub(crate) async fn copy_file<P: AsRef<Path>>(&self, from: P, to: P) -> Result<()> {
+        self.ensure_dir_exists(
+            &to.as_ref()
+                .parent()
+                .ok_or_else(|| eyre!("Could not get parent of {}", &to.as_ref().display()))?,
+        )
+        .await?;
+
+        // Remove existing file or symlink if it exists
+        if self.check_file_exists(&to).await? {
+            self.delete_file(&to).await?
+        }
+
+        match fs::copy(&from, &to).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
+                .privilege_manager
+                .sudo_exec(
+                    "cp",
+                    [
+                        path_to_string(&from)?.as_str(),
+                        path_to_string(&to)?.as_str(),
+                    ],
+                    Some(&format!(
+                        "Copy {} -> {}",
+                        &from.as_ref().display(),
+                        &to.as_ref().display()
+                    )),
+                )
+                .await?),
+            Err(e) => Err(e).wrap_err_with(|| {
+                format!(
+                    "Failed to copy {} -> {}",
+                    &from.as_ref().display(),
+                    &to.as_ref().display()
+                )
+            })?,
+        }
+    }
+
+    /// Links a file, using sudo if necessary due to permission issues.
+    ///
+    /// This function attempts to link a file normally first, and if a permission error is
+    /// encountered, it retries the operation using sudo.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Source path to copy from
+    /// * `to` - Destination path to copy to
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Source file cannot be read
+    /// - Destination directory cannot be created
+    /// - Copy operation fails even with elevated privileges
+    pub(crate) async fn link_file<P: AsRef<Path>>(&self, from: P, to: P) -> Result<()> {
+        self.ensure_dir_exists(
+            &to.as_ref()
+                .parent()
+                .ok_or_else(|| eyre!("Could not get parent of {}", &to.as_ref().display()))?,
+        )
+        .await?;
+
+        // Remove existing file or symlink if it exists
+        if self.check_file_exists(&to).await? {
+            self.delete_file(&to).await?
+        }
+
+        match fs::symlink(&from, &to).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
+                .privilege_manager
+                .sudo_exec(
+                    "ln",
+                    ["-sf", &path_to_string(&from)?, &path_to_string(&to)?],
+                    Some(&format!(
+                        "Link {} -> {}",
+                        &from.as_ref().display(),
+                        &to.as_ref().display()
+                    )),
+                )
+                .await?),
+            Err(e) => Err(e).wrap_err_with(|| {
+                format!(
+                    "Failed to link {} -> {}",
+                    &from.as_ref().display(),
+                    &to.as_ref().display()
+                )
+            })?,
+        }
+    }
+
+    /// Deletes a file, using sudo if necessary due to permission issues.
+    ///
+    /// This function attempts to delete a file normally first, and if a permission error is
+    /// encountered, it retries the operation using sudo.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path of the file to delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during the deletion.
+    #[instrument(skip(path))]
+    pub(crate) async fn delete_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        match fs::remove_file(&path).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
+                .privilege_manager
+                .sudo_exec("rm", ["-f", &path_to_string(&path)?], None)
+                .await?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!("{}: {}", path.as_ref().display(), e);
+                Ok(())
+            }
+            Err(e) => Err(e).wrap_err_with(|| format!("Failed to delete {:?}", &path.as_ref()))?,
+        }
+    }
+
+    /// Recursively deletes empty parent directories, optionally prompting for confirmation.
+    ///
+    /// This function walks up the directory tree from the given path, deleting empty directories.
+    /// It can either ask for confirmation before each deletion or proceed without asking.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The starting path from which to begin deleting empty parent directories.
+    /// * `no_ask` - If true, deletes without asking for confirmation. If false, prompts before each
+    ///   deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during the process.
+    pub(crate) async fn delete_parents<P: AsRef<Path>>(&self, path: P, no_ask: bool) -> Result<()> {
+        let mut path = path
+            .as_ref()
+            .parent()
+            .ok_or_else(|| eyre!("Failed to get parent of {:?}", path.as_ref()))?;
+
+        while path.is_dir()
+            && match path.read_dir() {
+                Ok(_) => path
+                    .read_dir()
+                    .map(|mut i| i.next().is_none())
+                    .unwrap_or(false),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // If permission is denied, use sudo to check if the directory is empty
+                    let path_str = path_to_string(path)?;
+                    let output = self
+                        .privilege_manager
+                        .sudo_exec_output(
+                            "find",
+                            [path_str.as_str(), "-maxdepth", "0", "-empty"],
+                            None,
+                        )
+                        .await?;
+                    if output.status.success() {
+                        !output.stdout.is_empty()
+                    } else {
+                        return Err(eyre!(
+                            "Failed to check if directory {} is empty: {}",
+                            path_str,
+                            String::from_utf8(output.stderr)?
+                        ));
+                    }
+                }
+                Err(e) => {
+                    Err(e).wrap_err_with(|| format!("Failed to read directory {:?}", path))?
+                }
+            }
+        {
+            if no_ask
+                || common::ask_boolean(&format!(
+                    "{}\n{}",
+                    format!("Directory {} is now empty. Delete [y/N]?", path.display()),
+                    "(You can skip this prompt with the CLI argument '-y true' or '--noconfirm=true')",
+                ))
+            {
+                match fs::remove_dir(path).await {
+                    Ok(_) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                        // If permission is denied, use sudo to remove the directory
+                        self.privilege_manager
+                            .sudo_exec("rmdir", [path_to_string(path)?.as_str()], None)
+                            .await?
+                    }
+                    Err(e) => {
+                        Err(e).wrap_err_with(|| format!("Failed to remove directory {:?}", path))?
+                    }
+                }
+            }
+            path = path
+                .parent()
+                .ok_or_else(|| eyre!("Failed to get parent of {:?}", path))?;
+        }
+        Ok(())
     }
 }
 
@@ -186,10 +461,10 @@ pub(crate) async fn check_link_exists<P: AsRef<Path>>(path: P, source: Option<P>
 /// # Arguments
 ///
 /// * `path` - The path of the directory to read.
-/// # Returns
 ///
-/// * `Ok(Vec<PathBuf>)` - A vector with subdirectories.
-/// * `Err` - If an error occurs during the operation.
+/// # Errors
+///
+/// Returns an error if an error occurs during the operation.
 pub(crate) fn read_directory<P: AsRef<Path>>(path: P) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(path)? {
@@ -206,141 +481,16 @@ pub(crate) fn read_directory<P: AsRef<Path>>(path: P) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Ensures that a directory exists, creating it if necessary, using sudo if needed.
-///
-/// This function attempts to create a directory and all its parent directories. If a permission
-/// error is encountered, it retries the operation using sudo.
-///
-/// # Arguments
-///
-/// * `path` - The path of the directory to ensure exists.
-///
-/// # Returns
-///
-/// * `Ok(())` - If the directory exists or was successfully created.
-/// * `Err` - If an error occurs during the operation.
-pub(crate) async fn ensure_dir_exists<P: AsRef<Path>>(path: P) -> Result<()> {
-    match fs::create_dir_all(&path).await {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            // If permission is denied, use sudo to create the directory
-            Ok(sudo::sudo_exec("mkdir", &["-p", &path_to_string(&path)?], None).await?)
-        }
-        Err(e) => Err(e).wrap_err_with(|| format!("Falied to create {:?}", &path.as_ref()))?,
-    }
-}
-
-/// Deletes a file, using sudo if necessary due to permission issues.
-///
-/// This function attempts to delete a file normally first, and if a permission error is
-/// encountered, it retries the operation using sudo.
-///
-/// # Arguments
-///
-/// * `path` - The path of the file to delete.
-///
-/// # Returns
-///
-/// * `Ok(())` - If the file was successfully deleted or didn't exist.
-/// * `Err` - If an error occurs during the deletion.
-#[instrument(skip(path))]
-pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
-    match fs::remove_file(&path).await {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            Ok(sudo::sudo_exec("rm", &["-f", &path_to_string(&path)?], None).await?)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            warn!("{}", e);
-            Ok(())
-        }
-        Err(e) => Err(e).wrap_err_with(|| format!("Falied to delete {:?}", &path.as_ref()))?,
-    }
-}
-
-/// Recursively deletes empty parent directories, optionally prompting for confirmation.
-///
-/// This function walks up the directory tree from the given path, deleting empty directories. It
-/// can either ask for confirmation before each deletion or proceed without asking.
-///
-/// # Arguments
-///
-/// * `path` - The starting path from which to begin deleting empty parent directories.
-/// * `no_ask` - If true, deletes without asking for confirmation. If false, prompts before each
-///   deletion.
-///
-/// # Returns
-///
-/// * `Ok(())` - If all operations were successful.
-/// * `Err` - If an error occurs during the process.
-pub(crate) async fn delete_parents<P: AsRef<Path>>(path: P, no_ask: bool) -> Result<()> {
-    let mut path = path
-        .as_ref()
-        .parent()
-        .ok_or_else(|| eyre!("Failed to get parent of {:?}", path.as_ref()))?;
-
-    while path.is_dir()
-        && match path.read_dir() {
-            Ok(_) => path
-                .read_dir()
-                .map(|mut i| i.next().is_none())
-                .unwrap_or(false),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                // If permission is denied, use sudo to check if the directory is empty
-                let path_str = path_to_string(path)?;
-                let output = sudo::sudo_exec_output(
-                    "find",
-                    &[path_str.as_str(), "-maxdepth", "0", "-empty"],
-                    None,
-                )
-                .await?;
-                if output.status.success() {
-                    !output.stdout.is_empty()
-                } else {
-                    return Err(eyre!(
-                        "Failed to check if directory {} is empty: {}",
-                        path_str,
-                        String::from_utf8(output.stderr)?
-                    ));
-                }
-            }
-            Err(e) => Err(e).wrap_err_with(|| format!("Failed to read directory {:?}", path))?,
-        }
-    {
-        if no_ask
-            || common::ask_boolean(&format!(
-                "Directory at {:?} is now empty. Delete [y/N]? ",
-                path
-            ))
-        {
-            match fs::remove_dir(path).await {
-                Ok(_) => (),
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    // If permission is denied, use sudo to remove the directory
-                    sudo::sudo_exec("rmdir", &[&path_to_string(path)?], None).await?
-                }
-                Err(e) => {
-                    Err(e).wrap_err_with(|| format!("Failed to remove directory {:?}", path))?
-                }
-            }
-        }
-        path = path
-            .parent()
-            .ok_or_else(|| eyre!("Failed to get parent of {:?}", path))?;
-    }
-    Ok(())
-}
-
 // -------------------------------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::OptionExt;
-
     use super::*;
-    use std::env;
+    use crate::tests;
+    use color_eyre::eyre::OptionExt;
+    use std::sync::Arc;
 
     #[test]
     fn test_path_to_string() -> Result<()> {
@@ -373,7 +523,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
         assert_eq!(
-            expand_path("$TEST_DIR/file.txt", Some(env))?,
+            expand_path("$TEST_DIR/file.txt", Some(&env))?,
             PathBuf::from("/tmp/test/file.txt")
         );
 
@@ -382,7 +532,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
         assert_eq!(
-            expand_path("~/dir/$TEST_DIR/file.txt", Some(env))?,
+            expand_path("~/dir/$TEST_DIR/file.txt", Some(&env))?,
             PathBuf::from(format!("{}/dir/tmp/test/file.txt", path_to_string(home)?))
         );
 
@@ -402,41 +552,50 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_file_exists() -> Result<()> {
-        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = crate::SUDO_CMD.set("sudo".to_string());
+        let (_tx, pm) = tests::pm_setup()?;
+        let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_file = tempfile::NamedTempFile::new()?;
-        assert!(check_file_exists(temp_file).await?);
-        assert!(!check_file_exists("/tmp/doesnotexist.txt").await?);
+        assert!(fs_utils.check_file_exists(temp_file).await?);
+        assert!(!fs_utils.check_file_exists("/tmp/doesnotexist.txt").await?);
 
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
         let temp_file = temp_dir.path().join("test.txt");
         fs::File::create(&temp_file).await?;
-        sudo::sudo_exec(
+        pm.sudo_exec(
             "chown",
-            &["root:root", temp_dir.path().to_str().unwrap()],
+            ["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
-        assert!(check_file_exists(temp_file).await?);
-        assert!(!check_file_exists(temp_dir.path().join("doesnotexist.txt")).await?);
+        pm.sudo_exec("chmod", ["600", temp_dir.path().to_str().unwrap()], None)
+            .await?;
+        assert!(fs_utils.check_file_exists(temp_file).await?);
+        assert!(
+            !fs_utils
+                .check_file_exists(temp_dir.path().join("doesnotexist.txt"))
+                .await?
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn test_check_link_exists() -> Result<()> {
-        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = crate::SUDO_CMD.set("sudo".to_string());
+        let (_tx, pm) = tests::pm_setup()?;
+        let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_file = tempfile::NamedTempFile::new()?;
         let temp_file_pathbuf = PathBuf::from(&temp_file.path());
         let temp_dir = tempfile::tempdir()?;
         let temp_link = temp_dir.path().join("foo.txt");
         fs::symlink(&temp_file, &temp_link).await?;
-        assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
-        assert!(check_link_exists(&temp_link, None).await?);
+        assert!(
+            fs_utils
+                .check_link_exists(&temp_link, Some(&temp_file_pathbuf))
+                .await?
+        );
+        assert!(fs_utils.check_link_exists(&temp_link, None).await?);
 
         // Test with elevated permissions
         let temp_file = tempfile::NamedTempFile::new()?;
@@ -445,16 +604,21 @@ mod tests {
         let temp_link = temp_dir.path().join("foo.txt");
         fs::symlink(&temp_file, &temp_link).await?;
 
-        sudo::sudo_exec(
+        pm.sudo_exec(
             "chown",
-            &["root:root", temp_dir.path().to_str().unwrap()],
+            ["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
+        pm.sudo_exec("chmod", ["600", temp_dir.path().to_str().unwrap()], None)
+            .await?;
 
-        assert!(check_link_exists(&temp_link, Some(&temp_file_pathbuf)).await?);
-        assert!(check_link_exists(&temp_link, None).await?);
+        assert!(
+            fs_utils
+                .check_link_exists(&temp_link, Some(&temp_file_pathbuf))
+                .await?
+        );
+        assert!(fs_utils.check_link_exists(&temp_link, None).await?);
         Ok(())
     }
 
@@ -498,69 +662,71 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_dir_exists() -> Result<()> {
-        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = crate::SUDO_CMD.set("sudo".to_string());
+        let (_tx, pm) = tests::pm_setup()?;
+        let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_dir = tempfile::tempdir()?;
         let target = temp_dir.path().join("a").join("b").join("c");
-        ensure_dir_exists(&target).await?;
-        assert!(check_file_exists(&target).await?);
-        assert!(check_file_exists(&target).await?);
+        fs_utils.ensure_dir_exists(&target).await?;
+        assert!(fs_utils.check_file_exists(&target).await?);
+        assert!(fs_utils.check_file_exists(&target).await?);
 
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
         let target = temp_dir.path().join("a").join("b").join("c");
 
-        sudo::sudo_exec(
+        pm.sudo_exec(
             "chown",
-            &["root:root", temp_dir.path().to_str().unwrap()],
+            ["root:root", temp_dir.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", temp_dir.path().to_str().unwrap()], None).await?;
+        pm.sudo_exec("chmod", ["600", temp_dir.path().to_str().unwrap()], None)
+            .await?;
 
-        ensure_dir_exists(&target).await?;
-        assert!(check_file_exists(&target).await?);
-        assert!(check_file_exists(&target).await?);
+        fs_utils.ensure_dir_exists(&target).await?;
+        assert!(fs_utils.check_file_exists(&target).await?);
+        assert!(fs_utils.check_file_exists(&target).await?);
         Ok(())
     }
 
     #[tokio::test]
     async fn test_delete_file() -> Result<()> {
-        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = crate::SUDO_CMD.set("sudo".to_string());
+        let (_tx, pm) = tests::pm_setup()?;
+        let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_file = tempfile::NamedTempFile::new()?;
 
-        assert!(check_file_exists(&temp_file).await?);
-        assert!(delete_file(&temp_file).await.is_ok());
-        assert!(!check_file_exists(&temp_file).await?);
+        assert!(fs_utils.check_file_exists(&temp_file).await?);
+        assert!(fs_utils.delete_file(&temp_file).await.is_ok());
+        assert!(!fs_utils.check_file_exists(&temp_file).await?);
         // Return Ok(()) if file is not found
-        assert!(delete_file(&temp_file).await.is_ok());
+        assert!(fs_utils.delete_file(&temp_file).await.is_ok());
 
         // Test with elevated permissions
         let temp_file = tempfile::NamedTempFile::new()?;
 
-        sudo::sudo_exec(
+        pm.sudo_exec(
             "chown",
-            &["root:root", temp_file.path().to_str().unwrap()],
+            ["root:root", temp_file.path().to_str().unwrap()],
             None,
         )
         .await?;
-        sudo::sudo_exec("chmod", &["600", temp_file.path().to_str().unwrap()], None).await?;
+        pm.sudo_exec("chmod", ["600", temp_file.path().to_str().unwrap()], None)
+            .await?;
 
-        assert!(check_file_exists(&temp_file).await?);
-        assert!(delete_file(&temp_file).await.is_ok());
-        assert!(!check_file_exists(&temp_file).await?);
+        assert!(fs_utils.check_file_exists(&temp_file).await?);
+        assert!(fs_utils.delete_file(&temp_file).await.is_ok());
+        assert!(!fs_utils.check_file_exists(&temp_file).await?);
         // Return Ok(()) if file is not found
-        assert!(delete_file(&temp_file).await.is_ok());
+        assert!(fs_utils.delete_file(&temp_file).await.is_ok());
         Ok(())
     }
 
     #[tokio::test]
     async fn test_delete_parents() -> Result<()> {
-        crate::USE_SUDO.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = crate::SUDO_CMD.set("sudo".to_string());
+        let (_tx, pm) = tests::pm_setup()?;
+        let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_dir = tempfile::tempdir()?;
         let temp_path1 = temp_dir.path().join("test1");
@@ -574,13 +740,19 @@ mod tests {
         // Create a file
         fs::write(&temp_path1.join("text.txt"), "hi").await?;
         // Try to delete non-empty dir
-        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path1.join("text.txt"), true)
+            .await?;
         assert!(&temp_path1.exists());
         // Remove file and try again
         fs::remove_file(&temp_path1.join("text.txt")).await?;
-        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path1.join("text.txt"), true)
+            .await?;
         assert!(!&temp_path1.exists());
-        delete_parents(&temp_path2.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path2.join("text.txt"), true)
+            .await?;
         assert!(!&temp_path2.exists());
         // Verify that the grandparent got deleted as well
         assert!(!&temp_dir.path().exists());
@@ -598,24 +770,34 @@ mod tests {
         // Create a file
         fs::write(&temp_path1.join("text.txt"), "hi").await?;
         // Change owner and permissions
-        sudo::sudo_exec("chown", &["root:root", temp_path1.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chown", &["root:root", temp_path2.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chmod", &["600", temp_path1.to_str().unwrap()], None).await?;
-        sudo::sudo_exec("chmod", &["600", temp_path2.to_str().unwrap()], None).await?;
+        pm.sudo_exec("chown", ["root:root", temp_path1.to_str().unwrap()], None)
+            .await?;
+        pm.sudo_exec("chown", ["root:root", temp_path2.to_str().unwrap()], None)
+            .await?;
+        pm.sudo_exec("chmod", ["600", temp_path1.to_str().unwrap()], None)
+            .await?;
+        pm.sudo_exec("chmod", ["600", temp_path2.to_str().unwrap()], None)
+            .await?;
 
         // Try to delete non-empty dir
-        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path1.join("text.txt"), true)
+            .await?;
         assert!(&temp_path1.exists());
         // Remove file and try again
-        sudo::sudo_exec(
+        pm.sudo_exec(
             "rm",
-            &["-f", temp_path1.join("text.txt").to_str().unwrap()],
+            ["-f", temp_path1.join("text.txt").to_str().unwrap()],
             None,
         )
         .await?;
-        delete_parents(&temp_path1.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path1.join("text.txt"), true)
+            .await?;
         assert!(!&temp_path1.exists());
-        delete_parents(&temp_path2.join("text.txt"), true).await?;
+        fs_utils
+            .delete_parents(&temp_path2.join("text.txt"), true)
+            .await?;
         assert!(!&temp_path2.exists());
         // Verify that the grandparent got deleted as well
         assert!(!&temp_dir.path().exists());
