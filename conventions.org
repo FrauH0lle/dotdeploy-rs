@@ -22,3 +22,9 @@ The basic structure of item documentation should follow:
 /// conditions might cause those errors.
 #+end_src
 - A separate ~Returns~ section or similar is usually not necessary.
+
+Explanatory code comments should be plentiful. It should be assumed that the
+code is not touched for a long time and whoever is working on it needs guidance.
+Thus, the comments should explain what is happening and why.
+* General guidelines
+Try to follow the principle: Make it work, make it correct, make it fast.

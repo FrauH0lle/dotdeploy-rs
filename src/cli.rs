@@ -1,11 +1,13 @@
-//! This module defines the command-line interface (CLI) structure for the
-//! application, using the clap crate for parsing and handling command-line
-//! arguments.
+//! This module defines the command-line interface (CLI) structure for the application, using the
+//! clap crate for parsing and handling command-line arguments.
+//!
+//! * `Cli` - Root command structure with global options
+//! * `Commands` - Subcommands and their specific parameters
+//! * `get_cli` - Primary entry point for CLI parsing
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
-/// Root command for the dotdeploy application
 #[derive(Parser)]
 #[command(
     author,
@@ -26,44 +28,44 @@ pub(crate) struct Cli {
     pub(crate) force: Option<bool>,
 
     /// Dotdeploy config folder
-    #[clap(long, action, global = true, env = "DOD_CONFIG_ROOT")]
+    #[clap(long, action, env = "DOD_CONFIG_ROOT")]
     pub(crate) config_root: Option<PathBuf>,
 
     /// Root folder of dotfiles
-    #[clap(long, action, global = true, env = "DOD_DOTFILES_ROOT")]
+    #[clap(long, action, env = "DOD_DOTFILES_ROOT")]
     pub(crate) dotfiles_root: Option<PathBuf>,
 
-    /// Root folder of Dotedeploy modules
-    #[clap(long, action, global = true, env = "DOD_MODULES_ROOT")]
+    /// Root folder of Dotdeploy modules
+    #[clap(long, action, env = "DOD_MODULES_ROOT")]
     pub(crate) modules_root: Option<PathBuf>,
 
     /// Root folder of Dotedeploy hosts
-    #[clap(long, action, global = true, env = "DOD_HOSTS_ROOT")]
+    #[clap(long, action, env = "DOD_HOSTS_ROOT")]
     pub(crate) hosts_root: Option<PathBuf>,
 
     /// Host device's hostname
-    #[clap(long, action, global = true, env = "DOD_HOSTNAME")]
+    #[clap(long, action, env = "DOD_HOSTNAME")]
     pub(crate) hostname: Option<String>,
 
     /// Host device's Linux distribution
-    #[clap(long, action, global = true, env = "DOD_DISTRIBUTION")]
+    #[clap(long, action, env = "DOD_DISTRIBUTION")]
     pub(crate) distribution: Option<String>,
 
     /// Use sudo to elevate privileges
-    #[clap(long, action, global = true, env = "DOD_USE_SUDO")]
+    #[clap(long, action, env = "DOD_USE_SUDO")]
     pub(crate) use_sudo: Option<bool>,
 
     /// Deploy files to directories other than the user's HOME
-    #[clap(long, action, global = true, env = "DOD_DEPLOY_SYS_FILES")]
+    #[clap(long, action, env = "DOD_DEPLOY_SYS_FILES")]
     pub(crate) deploy_sys_files: Option<bool>,
 
     /// Command used to install packages
-    #[clap(long, action, global = true, env = "DOD_INSTALL_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
-    pub(crate) install_pkg_cmd: Option<Vec<String>>,
+    #[clap(long, action, env = "DOD_INSTALL_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
+    pub(crate) install_pkg_cmd: Option<Vec<OsString>>,
 
     /// Command used to remove packages
-    #[clap(long, action, global = true, env = "DOD_REMOVE_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
-    pub(crate) remove_pkg_cmd: Option<Vec<String>>,
+    #[clap(long, action, env = "DOD_REMOVE_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
+    pub(crate) remove_pkg_cmd: Option<Vec<OsString>>,
 
     /// Skip package installation during deployment
     #[clap(long, action, global = true, env = "DOD_SKIP_PKG_INSTALL")]
@@ -74,11 +76,11 @@ pub(crate) struct Cli {
     pub(crate) noconfirm: Option<bool>,
 
     /// Directory of the user store
-    #[clap(long, action, global = true, env = "DOD_USER_STORE")]
+    #[clap(long, action, env = "DOD_USER_STORE")]
     pub(crate) user_store: Option<PathBuf>,
 
     /// Directory of the system store
-    #[clap(long, action, global = true, env = "DOD_SYSTEM_STORE")]
+    #[clap(long, action, env = "DOD_SYSTEM_STORE")]
     pub(crate) system_store: Option<PathBuf>,
 
     /// Verbosity level (-v = debug, -vv = trace)
@@ -91,11 +93,11 @@ pub(crate) struct Cli {
     pub(crate) verbosity: u8,
 
     /// Directory of log files
-    #[clap(long, action, global = true, env = "DOD_LOGS_DIR")]
+    #[clap(long, action, env = "DOD_LOGS_DIR")]
     pub(crate) logs_dir: Option<PathBuf>,
 
     /// Directory of log files
-    #[clap(long, action, global = true, env = "DOD_LOGS_MAX")]
+    #[clap(long, action, env = "DOD_LOGS_MAX")]
     pub(crate) logs_max: Option<usize>,
 }
 
@@ -149,12 +151,8 @@ pub(crate) enum Commands {
 
 /// Parses command-line arguments and returns a configured Cli instance.
 ///
-/// This function handles argument parsing and applies any necessary
-/// post-processing, such as capping the verbosity level at 2 (-vv maximum).
-///
-/// # Returns
-///
-/// Returns the parsed and processed CLI configuration.
+/// This function handles argument parsing and applies any necessary post-processing, such as
+/// capping the verbosity level at 2 (-vv maximum).
 pub(crate) fn get_cli() -> Cli {
     let mut cli = Cli::parse();
 

@@ -13,9 +13,9 @@ pub(crate) struct StoreFile {
     /// The checksum of the source file (optional)
     pub(crate) source_checksum: Option<String>,
     /// The destination path of the file
-    pub(crate) destination: String,
+    pub(crate) target: String,
     /// The checksum of the destination file (optional)
-    pub(crate) destination_checksum: Option<String>,
+    pub(crate) target_checksum: Option<String>,
     /// The operation performed on the file (must be either 'link', 'copy', or 'create')
     pub(crate) operation: String,
     /// The user associated with this file operation (optional)
@@ -29,8 +29,8 @@ impl StoreFile {
         module: String,
         source: Option<String>,
         source_checksum: Option<String>,
-        destination: String,
-        destination_checksum: Option<String>,
+        target: String,
+        target_checksum: Option<String>,
         operation: String,
         user: Option<String>,
         date: chrono::DateTime<chrono::Utc>,
@@ -39,8 +39,8 @@ impl StoreFile {
             module,
             source,
             source_checksum,
-            destination,
-            destination_checksum,
+            target,
+            target_checksum,
             operation,
             user,
             date,
@@ -56,10 +56,11 @@ impl StoreFile {
 mod tests {
     use super::*;
     use crate::config::DotdeployConfig;
+    use crate::store::Store;
     use crate::store::sqlite::init_sqlite_store;
     use crate::store::sqlite::tests::store_setup_helper;
     use crate::store::sqlite_modules::StoreModule;
-    use crate::store::Store;
+    use crate::tests;
     use color_eyre::Result;
     use std::env;
     use tempfile::tempdir;
@@ -67,12 +68,14 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_get_file() -> Result<()> {
         let temp_dir = tempdir()?;
+        let (_tx, pm) = tests::pm_setup()?;
+
         // Init store
         let config = DotdeployConfig {
             user_store_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let user_store = init_sqlite_store(&config, false).await?;
+        let user_store = init_sqlite_store(&config, false, pm).await?;
 
         // Insert a module
         let test_module = StoreModule::new(
@@ -84,7 +87,7 @@ mod tests {
             chrono::offset::Utc::now(),
         );
 
-        user_store.add_module(test_module).await?;
+        user_store.add_module(&test_module).await?;
 
         // Test input
         let local_time = chrono::offset::Utc::now();
@@ -119,7 +122,7 @@ mod tests {
 
         assert_eq!(result.len(), 5);
         assert_eq!(result[2].module, "test");
-        assert_eq!(result[2].destination, "/home/foo2.txt");
+        assert_eq!(result[2].target, "/home/foo2.txt");
 
         // Missing module
         let e = store.get_all_files("Foobar").await?;

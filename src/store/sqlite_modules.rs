@@ -13,7 +13,7 @@ pub(crate) struct StoreModule {
     /// The reason for adding the module
     pub(crate) reason: String,
     /// Dependencies of the module (optional)
-    pub(crate) depends: Option<String>,
+    pub(crate) depends: Option<Vec<String>>,
     /// The date and time when the module was added or last updated
     pub(crate) date: chrono::DateTime<chrono::Utc>,
 }
@@ -24,7 +24,7 @@ impl StoreModule {
         location: String,
         user: Option<String>,
         reason: String,
-        depends: Option<String>,
+        depends: Option<Vec<String>>,
         date: chrono::DateTime<chrono::Utc>,
     ) -> Self {
         StoreModule {

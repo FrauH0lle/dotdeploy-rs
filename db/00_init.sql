@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS files (
   module_id INTEGER,
   source TEXT,
   source_checksum TEXT,
-  destination TEXT NOT NULL UNIQUE,
-  destination_checksum TEXT,
+  target TEXT NOT NULL UNIQUE,
+  target_checksum TEXT,
   operation TEXT NOT NULL,
   user TEXT,
   date TEXT NOT NULL,
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS packages (
   id INTEGER PRIMARY KEY,
   module_id INTEGER,
   name TEXT NOT NULL,
+  UNIQUE(module_id, name),
   FOREIGN KEY (module_id) REFERENCES modules(id)
   ON DELETE CASCADE ON UPDATE CASCADE
 );

@@ -3,12 +3,13 @@
 //! It includes operations for adding, removing, checking, and restoring backups.
 
 use crate::store::sqlite::SQLiteStore;
+use crate::utils::FileUtils;
 use crate::utils::file_fs;
 use crate::utils::file_metadata;
-use crate::utils::sudo;
-use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
+use color_eyre::eyre::{WrapErr, eyre};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
@@ -206,36 +207,39 @@ impl SQLiteStore {
         let temp_file = tempfile::NamedTempFile::new()?;
         let temp_path_str = file_fs::path_to_string(&temp_file)?;
 
-        sudo::sudo_exec(
-            "cp",
-            &[
-                "--preserve",
-                "--no-dereference",
-                &file_fs::path_to_string(&file_path)?,
-                &temp_path_str,
-            ],
-            Some(
-                format!(
-                    "Create temporary copy of {:?} for backup creation",
-                    file_path.as_ref()
-                )
-                .as_str(),
-            ),
-        )
-        .await?;
+        self.privilege_manager
+            .sudo_exec(
+                "cp",
+                [
+                    "--preserve",
+                    "--no-dereference",
+                    &file_fs::path_to_string(&file_path)?,
+                    &temp_path_str,
+                ],
+                Some(
+                    format!(
+                        "Create temporary copy of {:?} for backup creation",
+                        file_path.as_ref()
+                    )
+                    .as_str(),
+                ),
+            )
+            .await?;
 
-        file_metadata::set_file_metadata(
-            &temp_file,
-            file_metadata::FileMetadata {
-                uid: None,
-                gid: None,
-                permissions: Some(0o777),
-                is_symlink: false,
-                symlink_source: None,
-                checksum: None,
-            },
-        )
-        .await?;
+        let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
+        file_utils
+            .set_file_metadata(
+                &temp_file,
+                file_metadata::FileMetadata {
+                    uid: None,
+                    gid: None,
+                    permissions: Some(0o777),
+                    is_symlink: false,
+                    symlink_source: None,
+                    checksum: None,
+                },
+            )
+            .await?;
 
         fs::read(&temp_file)
             .await
@@ -323,20 +327,21 @@ FROM backups where path = ?1
         match fs::symlink(backup.link_source.as_ref().unwrap(), &to).await {
             Ok(_) => (),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                sudo::sudo_exec(
-                    "ln",
-                    &[
-                        "-sf",
-                        backup.link_source.as_ref().unwrap(),
-                        to.as_ref().to_str().unwrap(),
-                    ],
-                    None,
-                )
-                .await?;
+                self.privilege_manager
+                    .sudo_exec(
+                        "ln",
+                        [
+                            "-sf",
+                            backup.link_source.as_ref().unwrap(),
+                            to.as_ref().to_str().unwrap(),
+                        ],
+                        None,
+                    )
+                    .await?;
             }
             Err(e) => {
                 return Err(e)
-                    .wrap_err_with(|| format!("Failed to restore backup of {:?}", &backup.path))?
+                    .wrap_err_with(|| format!("Failed to restore backup of {:?}", &backup.path))?;
             }
         }
 
@@ -470,18 +475,21 @@ FROM backups where path = ?1
         permissions: Option<u32>,
         is_symlink: bool,
     ) -> Result<()> {
-        file_metadata::set_file_metadata(
-            path,
-            file_metadata::FileMetadata {
-                uid: Some(owner[0].parse::<u32>()?),
-                gid: Some(owner[1].parse::<u32>()?),
-                permissions,
-                is_symlink,
-                symlink_source: None,
-                checksum: None,
-            },
-        )
-        .await?;
+        let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
+
+        file_utils
+            .set_file_metadata(
+                path,
+                file_metadata::FileMetadata {
+                    uid: Some(owner[0].parse::<u32>()?),
+                    gid: Some(owner[1].parse::<u32>()?),
+                    permissions,
+                    is_symlink,
+                    symlink_source: None,
+                    checksum: None,
+                },
+            )
+            .await?;
         Ok(())
     }
 
@@ -499,12 +507,13 @@ FROM backups where path = ?1
     /// - Sudo command fails
     /// - File paths contain invalid characters
     async fn move_file_with_sudo(&self, from: &Path, to: &Path) -> Result<()> {
-        sudo::sudo_exec(
-            "cp",
-            &["--preserve", from.to_str().unwrap(), to.to_str().unwrap()],
-            None,
-        )
-        .await?;
+        self.privilege_manager
+            .sudo_exec(
+                "cp",
+                ["--preserve", from.to_str().unwrap(), to.to_str().unwrap()],
+                None,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -516,8 +525,8 @@ FROM backups where path = ?1
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::sqlite::tests::store_setup_helper;
     use crate::store::Store;
+    use crate::store::sqlite::tests::store_setup_helper;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use tempfile::tempdir;
 
