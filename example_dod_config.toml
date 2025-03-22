@@ -1,0 +1,62 @@
+# Example dotdeploy configuration file
+# Paths can be absolute or use ~/ for home directory
+
+# Basic options
+# Show what would happen without making changes
+dry_run = false
+
+# Skip confirmations for destructive operations
+force = false 
+
+# Assume "yes" instead of prompting for confirmations
+noconfirm = false
+
+# Path configurations
+# Root directory containing dotfiles
+dotfiles_root = "~/.dotfiles"
+
+# Directory containing module definitions
+modules_root = "~/.dotfiles/modules"
+
+# Directory containing host-specific configurations 
+hosts_root = "~/.dotfiles/hosts"
+
+# Path for user-specific data storage
+user_store_path = "~/.local/share/dotdeploy"
+
+# Path for system-wide data storage
+system_store_path = "/var/lib/dotdeploy"
+
+# Directory for storing log files
+logs_dir = "~/.local/share/dotdeploy/logs"
+
+# System detection (auto-detected if not specified)
+# Override detected hostname
+hostname = "myhost"
+
+# Override detected distribution (format: "id:version")
+distribution = "ubuntu:22.04"
+
+# Privilege management
+# Use sudo for privilege elevation
+use_sudo = true
+
+# Command to use for privilege elevation (sudo/doas/etc)
+sudo_cmd = "sudo"
+
+# Allow deploying files outside user's HOME directory
+deploy_sys_files = true
+
+# Package management
+# Command to install packages (with flags)
+install_pkg_cmd = ["apt-get", "install", "-y"]
+
+# Command to remove packages (with flags)
+remove_pkg_cmd = ["apt-get", "remove", "-y"]
+
+# Skip package installation during deployment
+skip_pkg_install = false
+
+# Logging
+# Maximum number of log files to retain
+logs_max = 15
