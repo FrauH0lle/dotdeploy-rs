@@ -192,8 +192,6 @@ pub(crate) async fn deploy(
         }
     }
 
-    // Notify that packages
-
     // Wrap handlebars and context in an Arc as they will be shared across threads
     let hb = Arc::new(handlebars);
     let context = Arc::new(context);
