@@ -1,9 +1,7 @@
 use crate::cmds::common;
-use crate::logs::log_output;
 use crate::store::Store;
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
-use crate::utils::commands::exec_output;
 use crate::utils::{FileUtils, file_fs};
 use crate::{
     config::DotdeployConfig, modules::queue::ModulesQueueBuilder, store::Stores,
@@ -107,7 +105,7 @@ pub(crate) async fn deploy(
     let op_tye = "copy";
 
     // Insert a module
-    for test_m in vec!["test1", "test2", "test3"] {
+    for test_m in ["test1", "test2", "test3"] {
         for i in 0..5 {
             let local_time = chrono::offset::Utc::now();
             let test_file = StoreFile::new(
@@ -197,7 +195,7 @@ pub(crate) async fn deploy(
     let context = Arc::new(context);
 
     debug!("Running SETUP phase");
-    setup_phase.exec_pre_tasks(&*pm, &*config).await?;
+    setup_phase.exec_pre_tasks(&pm, &config).await?;
     setup_phase
         .deploy_files(
             Arc::clone(&pm),
@@ -206,7 +204,7 @@ pub(crate) async fn deploy(
             Arc::clone(&hb),
         )
         .await?;
-    setup_phase.exec_post_tasks(&*pm, &*config).await?;
+    setup_phase.exec_post_tasks(&pm, &config).await?;
     debug!("SETUP phase complete");
 
     // Install packages
@@ -248,8 +246,8 @@ pub(crate) async fn deploy(
                 let other_module_pkgs = stores.get_all_other_module_packages(&pmod).await?;
                 // Drop packages for module
                 for p in diff {
-                    stores.remove_package(pmod, &p).await?;
-                    if !other_module_pkgs.contains(&pmod) {
+                    stores.remove_package(pmod, p).await?;
+                    if !other_module_pkgs.contains(pmod) {
                         obsolete.push(p.to_string());
                     }
                 }
@@ -262,9 +260,9 @@ pub(crate) async fn deploy(
             if !obsolete.is_empty() {
                 let obsolete = obsolete
                     .into_iter()
-                    .map(|x| OsString::from(x))
+                    .map(OsString::from)
                     .collect::<Vec<_>>();
-                common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &obsolete, &*pm)
+                common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &obsolete, &pm)
                     .await?;
             }
 
@@ -286,7 +284,7 @@ pub(crate) async fn deploy(
                 .collect::<Vec<_>>();
 
             if !packages.is_empty() {
-                common::exec_package_cmd(config.install_pkg_cmd.as_ref().unwrap(), &packages, &*pm)
+                common::exec_package_cmd(config.install_pkg_cmd.as_ref().unwrap(), &packages, &pm)
                     .await?;
             }
 
@@ -295,7 +293,7 @@ pub(crate) async fn deploy(
     }
 
     debug!("Running CONFIG phase");
-    config_phase.exec_pre_tasks(&*pm, &*config).await?;
+    config_phase.exec_pre_tasks(&pm, &config).await?;
     config_phase
         .deploy_files(
             Arc::clone(&pm),
@@ -304,13 +302,13 @@ pub(crate) async fn deploy(
             Arc::clone(&hb),
         )
         .await?;
-    config_phase.exec_post_tasks(&*pm, &*config).await?;
+    config_phase.exec_post_tasks(&pm, &config).await?;
     debug!("CONFIG phase complete");
 
     // Generate files
     debug!("Generating files");
     for file in file_generators {
-        file.generate_file(&*stores, &*context, &*hb, &*config, Arc::clone(&pm))
+        file.generate_file(&stores, &context, &hb, &config, Arc::clone(&pm))
             .await?;
     }
     debug!("Generating files complete");

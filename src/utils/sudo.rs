@@ -340,11 +340,11 @@ impl PrivilegeManager {
             }
             Ok(())
         } else {
-            return Err(eyre!(
+            Err(eyre!(
                 "Use of '{}' is disabled. ",
                 self.root_cmd.cmd().to_string_lossy()
             )
-            .suggestion("Check the value of the variable `use_sudo` in your config file"));
+            .suggestion("Check the value of the variable `use_sudo` in your config file"))
         }
     }
 

@@ -72,11 +72,11 @@ impl Stores {
             match self.system_store {
                 Some(ref store) => Ok(store),
                 None => {
-                    return Err(
+                    Err(
                         eyre!("System store requested but was found empty").suggestion(
                             "Check the value of 'deploy_sys_files' in the dotdeploy config",
                         ),
-                    );
+                    )
                 }
             }
         }
@@ -86,9 +86,9 @@ impl Stores {
     // * Modules
 
     pub(crate) async fn add_module(&self, module: &StoreModule) -> Result<()> {
-        self.user_store.add_module(&module).await?;
+        self.user_store.add_module(module).await?;
         if let Some(ref system_store) = self.system_store {
-            system_store.add_module(&module).await?;
+            system_store.add_module(module).await?;
         }
         Ok(())
     }

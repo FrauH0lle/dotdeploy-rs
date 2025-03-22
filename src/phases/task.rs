@@ -32,8 +32,7 @@ impl PhaseTask {
             let shell_display = format!(
                 "{}...",
                 shell
-                    .replace('\n', " ")
-                    .replace('\r', " ")
+                    .replace(['\n', '\r'], " ")
                     .chars()
                     .take(50)
                     .collect::<String>()
@@ -53,14 +52,14 @@ impl PhaseTask {
             if output.status.success() {
                 Ok(())
             } else {
-                return Err(eyre!(
+                Err(eyre!(
                     "Failed to execute {} from module {}",
                     shell,
                     &self.module_name
-                ));
+                ))
             }
         } else if let Some(ref exec) = self.exec {
-            let args = self.args.as_deref().unwrap_or_else(|| &[]);
+            let args = self.args.as_deref().unwrap_or(&[]);
             let exec_display = format!("{} {}", exec, args.join(" "));
 
             if self.sudo {
@@ -82,7 +81,7 @@ impl PhaseTask {
                                 .args
                                 .as_ref()
                                 .map(|a| a.join(" "))
-                                .unwrap_or_else(|| "".to_string())
+                                .unwrap_or_default()
                         )),
                     ),
                 )

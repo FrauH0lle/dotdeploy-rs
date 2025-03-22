@@ -5,7 +5,6 @@
 //! files that might require higher permissions.
 
 use crate::utils::FileUtils;
-use crate::utils::file_checksum;
 use crate::utils::file_fs;
 use crate::utils::file_permissions;
 use color_eyre::{Result, eyre::WrapErr};

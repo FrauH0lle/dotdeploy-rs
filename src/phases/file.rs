@@ -1,5 +1,3 @@
-use crate::modules::files::ModuleFile;
-use crate::modules::tasks::ModuleTask;
 use crate::store::Stores;
 use crate::store::sqlite_files::StoreFile;
 use crate::utils::FileUtils;
@@ -8,15 +6,14 @@ use crate::utils::file_metadata::FileMetadata;
 use crate::utils::file_permissions;
 use crate::utils::sudo::PrivilegeManager;
 use color_eyre::eyre::{WrapErr, eyre};
-use color_eyre::{Report, Result, Section};
+use color_eyre::Result;
 use handlebars::Handlebars;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::task::JoinSet;
 use toml::Value;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info};
 
 #[derive(Debug, Default, Clone)]
 pub(crate) enum PhaseFileOp {
@@ -83,9 +80,9 @@ impl PhaseFile {
                 .await?;
         }
         match self.operation {
-            PhaseFileOp::Copy => self.copy(pm, &*stores, &*context, &*hb).await?,
-            PhaseFileOp::Link => self.link(pm, &*stores).await?,
-            PhaseFileOp::Create => self.create(pm, &*stores, &*context, &*hb).await?,
+            PhaseFileOp::Copy => self.copy(pm, &stores, &context, &hb).await?,
+            PhaseFileOp::Link => self.link(pm, &stores).await?,
+            PhaseFileOp::Create => self.create(pm, &stores, &context, &hb).await?,
         }
 
         Ok(())
@@ -174,17 +171,17 @@ impl PhaseFile {
                     uid: self
                         .owner
                         .as_ref()
-                        .map(|o| file_permissions::user_to_uid(o))
+                        .map(file_permissions::user_to_uid)
                         .transpose()?,
                     gid: self
                         .group
                         .as_ref()
-                        .map(|g| file_permissions::group_to_gid(g))
+                        .map(file_permissions::group_to_gid)
                         .transpose()?,
                     permissions: self
                         .permissions
                         .as_ref()
-                        .map(|p| file_permissions::perms_str_to_int(p))
+                        .map(file_permissions::perms_str_to_int)
                         .transpose()?,
                     is_symlink: false,
                     symlink_source: None,
@@ -196,7 +193,7 @@ impl PhaseFile {
         stores
             .add_file(StoreFile::new(
                 self.module_name.clone(),
-                Some(file_fs::path_to_string(&source_file)?),
+                Some(file_fs::path_to_string(source_file)?),
                 Some(file_utils.calculate_sha256_checksum(&source_file).await?),
                 file_fs::path_to_string(&self.target)?,
                 Some(file_utils.calculate_sha256_checksum(&self.target).await?),
@@ -260,12 +257,12 @@ impl PhaseFile {
                     uid: self
                         .owner
                         .as_ref()
-                        .map(|o| file_permissions::user_to_uid(o))
+                        .map(file_permissions::user_to_uid)
                         .transpose()?,
                     gid: self
                         .group
                         .as_ref()
-                        .map(|g| file_permissions::group_to_gid(g))
+                        .map(file_permissions::group_to_gid)
                         .transpose()?,
                     permissions: None,
                     is_symlink: true,
@@ -278,7 +275,7 @@ impl PhaseFile {
         stores
             .add_file(StoreFile::new(
                 self.module_name.clone(),
-                Some(file_fs::path_to_string(&source_file)?),
+                Some(file_fs::path_to_string(source_file)?),
                 Some(file_utils.calculate_sha256_checksum(&source_file).await?),
                 file_fs::path_to_string(&self.target)?,
                 None,
@@ -327,7 +324,7 @@ impl PhaseFile {
         if self.template {
             // If it's a template, render it to a temporary file first
             let temp_file = tempfile::NamedTempFile::new()?;
-            let rendered = hb.render_template(&content, context).wrap_err_with(|| {
+            let rendered = hb.render_template(content, context).wrap_err_with(|| {
                 format!("Failed to render template {}", temp_file.path().display())
             })?;
             fs::write(&temp_file, rendered).await?;
@@ -348,17 +345,17 @@ impl PhaseFile {
                     uid: self
                         .owner
                         .as_ref()
-                        .map(|o| file_permissions::user_to_uid(o))
+                        .map(file_permissions::user_to_uid)
                         .transpose()?,
                     gid: self
                         .group
                         .as_ref()
-                        .map(|g| file_permissions::group_to_gid(g))
+                        .map(file_permissions::group_to_gid)
                         .transpose()?,
                     permissions: self
                         .permissions
                         .as_ref()
-                        .map(|p| file_permissions::perms_str_to_int(p))
+                        .map(file_permissions::perms_str_to_int)
                         .transpose()?,
                     is_symlink: false,
                     symlink_source: None,

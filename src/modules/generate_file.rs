@@ -7,10 +7,10 @@ use crate::store::sqlite_modules::StoreModule;
 use crate::utils::sudo::PrivilegeManager;
 use crate::utils::{FileUtils, file_fs};
 use color_eyre::eyre::{WrapErr, eyre};
-use color_eyre::{Report, Result};
+use color_eyre::Result;
 use handlebars::Handlebars;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
@@ -87,7 +87,7 @@ impl Generate {
                 .render_template(prepend, &context)
                 .wrap_err_with(|| format!("Failed to render template {:?}", &prepend))?;
             if !rendered.ends_with("\n") {
-                rendered.push_str("\n");
+                rendered.push('\n');
             }
             content.push_str(&rendered);
         }
@@ -108,7 +108,7 @@ impl Generate {
 
                 content.push_str(&format!("\n{} {}\n", &self.comment_start, &module.name));
                 if !rendered.ends_with("\n") {
-                    rendered.push_str("\n");
+                    rendered.push('\n');
                 }
                 content.push_str(&rendered);
             }
@@ -121,7 +121,7 @@ impl Generate {
                 .wrap_err_with(|| format!("Failed to render template {:?}", &append))?;
 
             if !rendered.ends_with("\n") {
-                rendered.push_str("\n");
+                rendered.push('\n');
             }
             content.push_str(&rendered);
         }

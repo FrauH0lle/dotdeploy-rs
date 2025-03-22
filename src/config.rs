@@ -512,17 +512,17 @@ mod tests {
 
             assert_eq!(
                 test_config.dotfiles_root,
-                PathBuf::from(temp_dir.path().join(".dotfiles")),
+                temp_dir.path().join(".dotfiles"),
                 "Default dotfiles_root should be ~/.dotfiles"
             );
             assert_eq!(
                 test_config.modules_root,
-                PathBuf::from(temp_dir.path().join(".dotfiles").join("modules")),
+                temp_dir.path().join(".dotfiles").join("modules"),
                 "Default modules_root should be ~/.dotfiles/modules"
             );
             assert_eq!(
                 test_config.hosts_root,
-                PathBuf::from(temp_dir.path().join(".dotfiles").join("hosts")),
+                temp_dir.path().join(".dotfiles").join("hosts"),
                 "Default hosts_root should be ~/.dotfiles/hosts"
             );
 

@@ -1,6 +1,4 @@
-use std::ffi::OsString;
-use std::str::FromStr;
-use color_eyre::eyre::{OptionExt, WrapErr, eyre};
+use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use config::DotdeployConfigBuilder;
 use handlebars::Handlebars;
@@ -291,10 +289,8 @@ async fn run(
         cli::Commands::Deploy { modules } => {
             let modules = modules.unwrap_or_else(|| {
                 // IF no modules are given, assume host module
-                let host_module = vec![
-                    config.hosts_root.display().to_string().clone(),
-                    config.hostname.clone(),
-                ]
+                let host_module = [config.hosts_root.display().to_string().clone(),
+                    config.hostname.clone()]
                 .join(std::path::MAIN_SEPARATOR_STR);
                 vec![host_module]
             });

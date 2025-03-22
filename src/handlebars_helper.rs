@@ -1,5 +1,5 @@
 use handlebars::{
-    Context, Handlebars, Helper, HelperResult, JsonValue, Output, RenderContext, RenderErrorReason,
+    Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderErrorReason,
 };
 
 use serde_json::json;

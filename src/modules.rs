@@ -239,7 +239,7 @@ impl DotdeployModuleBuilder {
     pub(crate) fn from_toml(module_name: &str, dotdeploy_config: &DotdeployConfig) -> Result<Self> {
         let path = locate_module(module_name, dotdeploy_config)
             .wrap_err_with(|| format!("Failed to locate module config file: {:?}", &module_name))?;
-        let toml_string = std::fs::read_to_string(&path.join("config.toml"))
+        let toml_string = std::fs::read_to_string(path.join("config.toml"))
             .wrap_err_with(|| format!("Failed to read module config file: {:?}", &path))?;
         let mut config: Self = toml::from_str(&toml_string)
             .wrap_err_with(|| format!("Failed to parse module config from: {}", toml_string))?;

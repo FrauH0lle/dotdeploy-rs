@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 use sudo::PrivilegeManager;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(crate) mod common;
 pub(crate) mod file_checksum;

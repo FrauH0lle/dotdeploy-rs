@@ -2,7 +2,7 @@ use crate::config::DotdeployConfig;
 use crate::modules::DeployPhase;
 use crate::modules::files::ModuleFile;
 use crate::modules::generate_file::Generate;
-use crate::modules::messages::{CommandMessage, ModuleMessage};
+use crate::modules::messages::CommandMessage;
 use crate::modules::tasks::ModuleTask;
 use crate::modules::{DotdeployModule, DotdeployModuleBuilder};
 use crate::phases::DeployPhaseStruct;
@@ -81,7 +81,7 @@ impl ModulesQueue {
                 .wrap_err_with(|| format!("Failed to validate module {}", &module.name))?;
 
             // Evaluate conditions for files, tasks and messages
-            module.eval_conditions(&context, &hb).wrap_err_with(|| {
+            module.eval_conditions(&context, hb).wrap_err_with(|| {
                 format!("Failed to evaluate conditionals in module {}", &module.name)
             })?;
         }
@@ -197,7 +197,7 @@ impl ModulesQueue {
 
                 if let Some(module_packages) = module.packages.take() {
                     dbg!(&module_packages);
-                    for mut pkgs in module_packages.into_iter() {
+                    for pkgs in module_packages.into_iter() {
                         // FIXME 2025-03-21: Now we have to handle an empty string in the packages
                         if pkgs.install.is_empty() {
                             packages
@@ -305,7 +305,7 @@ impl ModulesQueue {
 
             // Expand source file names
             if let Some(ref mut source) = source {
-                *source = Self::expand_source_path(&source, &module)
+                *source = Self::expand_source_path(source, module)
                     .await
                     .wrap_err_with(|| {
                         format!(
@@ -316,7 +316,7 @@ impl ModulesQueue {
             }
 
             // Expand target file names
-            target = Self::expand_target_path(&target, &module)
+            target = Self::expand_target_path(&target, module)
                 .await
                 .wrap_err_with(|| {
                     format!(

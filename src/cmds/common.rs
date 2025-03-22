@@ -1,8 +1,8 @@
 use crate::logs::log_output;
 use crate::utils::commands::exec_output;
 use crate::utils::sudo::PrivilegeManager;
-use color_eyre::eyre::{WrapErr, eyre};
-use color_eyre::{Report, Result};
+use color_eyre::eyre::eyre;
+use color_eyre::Result;
 use std::ffi::{OsStr, OsString};
 use tracing::info;
 
@@ -22,10 +22,10 @@ where
         .collect::<Vec<OsString>>();
 
     let output = if first_cmd == pm.root_cmd.cmd() {
-        pm.sudo_exec_output(&cmd[1], &vec![&cmd[2..], &packages].concat(), None)
+        pm.sudo_exec_output(&cmd[1], &[&cmd[2..], &packages].concat(), None)
             .await?
     } else {
-        exec_output(&cmd[0], &vec![&cmd[1..], &packages].concat()).await?
+        exec_output(&cmd[0], &[&cmd[1..], &packages].concat()).await?
     };
 
     let cmd_str = cmd

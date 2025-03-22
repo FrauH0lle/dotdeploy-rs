@@ -5,7 +5,7 @@ use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
 use crate::store::{Store, create_system_dir, create_user_dir};
 use crate::utils::sudo::PrivilegeManager;
-use crate::utils::{FileUtils, file_fs, file_metadata};
+use crate::utils::{FileUtils, file_fs};
 use color_eyre::eyre::WrapErr;
 use color_eyre::{Result, Section};
 use sqlx::sqlite;
