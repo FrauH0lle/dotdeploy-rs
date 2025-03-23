@@ -122,7 +122,7 @@ fn init_config() -> Result<config::DotdeployConfig> {
         .with_logs_dir(cli.logs_dir)
         .with_logs_max(cli.logs_max)
         .build(cli.verbosity)?;
- 
+
     Ok(dotdeploy_config)
 }
 
@@ -285,12 +285,14 @@ async fn run(
     // --
     // * Execute
 
-   let cmd_result = match cli.command {
+    let cmd_result = match cli.command {
         cli::Commands::Deploy { modules } => {
             let modules = modules.unwrap_or_else(|| {
                 // IF no modules are given, assume host module
-                let host_module = [config.hosts_root.display().to_string().clone(),
-                    config.hostname.clone()]
+                let host_module = [
+                    config.hosts_root.display().to_string().clone(),
+                    config.hostname.clone(),
+                ]
                 .join(std::path::MAIN_SEPARATOR_STR);
                 vec![host_module]
             });
@@ -305,7 +307,9 @@ async fn run(
             .await
         }
         cli::Commands::Remove { modules } => todo!(),
-        cli::Commands::Update { packages } => todo!(),
+        cli::Commands::Update { packages } => {
+            cmds::update::update(config, Arc::clone(&stores), Arc::clone(&pm)).await
+        }
         cli::Commands::Sync { auto } => todo!(),
         cli::Commands::Validate { diff, fix } => todo!(),
         cli::Commands::Nuke { really } => todo!(),

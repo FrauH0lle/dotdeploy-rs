@@ -3,11 +3,12 @@ use crate::logs::log_output;
 use crate::modules;
 use crate::utils::commands::exec_output;
 use crate::utils::sudo::PrivilegeManager;
-use color_eyre::eyre::eyre;
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct PhaseTask {
     pub(crate) module_name: String,
     pub(crate) shell: Option<String>,
@@ -17,7 +18,7 @@ pub(crate) struct PhaseTask {
     pub(crate) hook: PhaseHook,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 pub(crate) enum PhaseHook {
     Pre,
     #[default]
@@ -77,11 +78,7 @@ impl PhaseTask {
                         Some(&format!(
                             "Executing {} with args: {}",
                             exec,
-                            &self
-                                .args
-                                .as_ref()
-                                .map(|a| a.join(" "))
-                                .unwrap_or_default()
+                            &self.args.as_ref().map(|a| a.join(" ")).unwrap_or_default()
                         )),
                     ),
                 )

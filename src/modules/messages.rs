@@ -33,7 +33,7 @@ impl ConditionEvaluator for ModuleMessage {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct CommandMessage {
     pub(crate) module_name: String,
     /// The content of the message to be displayed.

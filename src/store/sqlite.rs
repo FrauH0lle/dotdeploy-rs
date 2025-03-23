@@ -1,4 +1,7 @@
 use crate::config::DotdeployConfig;
+use crate::modules::messages::CommandMessage;
+use crate::modules::tasks::ModuleTask;
+use crate::store::DeployPhaseStruct;
 use crate::store::sqlite_backups::StoreBackup;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
@@ -648,6 +651,277 @@ VALUES (?1, ?2)
             .map(|x| x.name)
             .collect::<Vec<_>>())
     }
+
+    // --
+    // * Removal & Updates
+
+    async fn cache_phase<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()> {
+        let phase = phase.as_ref();
+        let data = serde_json::to_string(&data)?;
+
+        sqlx::query!(
+            r#"
+INSERT INTO phase_cache (phase, data)
+VALUES (?1, ?2)
+ON CONFLICT(phase)
+DO UPDATE SET data=excluded.data;
+            "#,
+            phase,
+            data,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_all_cached_tasks<S: AsRef<str>>(&self, phase: S) -> Option<DeployPhaseStruct> {
+        let phase = phase.as_ref();
+
+        let data = sqlx::query!("SELECT data FROM phase_cache WHERE phase = ?1", phase)
+            .fetch_optional(&self.pool)
+            // FIXME 2025-03-23: Handle error?
+            .await.unwrap();
+
+        // FIXME 2025-03-23: Handle error?
+        data.map(|d| serde_json::from_str(d.data.as_str()).unwrap())
+    }
+
+    //     async fn remove_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<()> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         sqlx::query!(
+    //             "DELETE FROM removal WHERE module_id = ?1 AND type = ?2",
+    //             module_id.id,
+    //             "task",
+    //         )
+    //         .execute(&self.pool)
+    //         .await?;
+
+    //         Ok(())
+    //     }
+
+    async fn cache_message<S: AsRef<str>>(
+        &self,
+        command: S,
+        message: CommandMessage,
+    ) -> Result<()> {
+        let module = &message.module_name;
+        let command = command.as_ref();
+
+        // Retrieve the ID of the module
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let message = serde_json::to_string(&message)?;
+
+        sqlx::query!(
+            r#"
+INSERT INTO message_cache (module_id, command, data)
+VALUES (?1, ?2, ?3)
+            "#,
+            module_id.id,
+            command,
+            message,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_all_cached_messages<S: AsRef<str>>(
+        &self,
+        module: S,
+        command: S,
+    ) -> Result<Vec<CommandMessage>> {
+        let module = module.as_ref();
+        let command = command.as_ref();
+
+        // Retrieve the ID of the module
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let rows = sqlx::query!(
+            "SELECT data FROM message_cache WHERE module_id = ?1 AND command = ?2",
+            module_id.id,
+            command
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| serde_json::from_str(r.data.as_str()))
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn remove_all_cached_messages<S: AsRef<str>>(&self, module: S, command: S) -> Result<()> {
+        let module = module.as_ref();
+        let command = command.as_ref();
+
+        // Retrieve the ID of the module
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_one(&self.pool)
+            .await?;
+
+        sqlx::query!(
+            "DELETE FROM message_cache WHERE module_id = ?1 AND command = ?2",
+            module_id.id,
+            command,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    // Updates
+
+    //     async fn add_update_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         let task = serde_json::to_string(&task)?;
+
+    //         sqlx::query!(
+    //             r#"
+    // INSERT INTO updates (module_id, type, data)
+    // VALUES (?1, ?2, ?3)
+    //             "#,
+    //             module_id.id,
+    //             "task",
+    //             task,
+    //         )
+    //         .execute(&self.pool)
+    //         .await?;
+
+    //         Ok(())
+    //     }
+
+    //     async fn get_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         let rows = sqlx::query!(
+    //             "SELECT data FROM updates WHERE module_id = ?1 AND type = ?2",
+    //             module_id.id,
+    //             "task"
+    //         )
+    //         .fetch_all(&self.pool)
+    //         .await?;
+
+    //         Ok(rows
+    //             .into_iter()
+    //             .map(|r| serde_json::from_str(r.data.as_str()))
+    //             .collect::<Result<Vec<_>, _>>()?)
+    //     }
+
+    //     async fn remove_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<()> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         sqlx::query!(
+    //             "DELETE FROM updates WHERE module_id = ?1 AND type = ?2",
+    //             module_id.id,
+    //             "task",
+    //         )
+    //         .execute(&self.pool)
+    //         .await?;
+
+    //         Ok(())
+    //     }
+
+    //     async fn add_update_message<S: AsRef<str>>(
+    //         &self,
+    //         message: CommandMessage,
+    //     ) -> Result<()> {
+    //         // let module = module.as_ref();
+    //         let module = &message.module_name;
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         let message = serde_json::to_string(&message)?;
+
+    //         sqlx::query!(
+    //             r#"
+    // INSERT INTO updates (module_id, type, data)
+    // VALUES (?1, ?2, ?3)
+    //             "#,
+    //             module_id.id,
+    //             "message",
+    //             message,
+    //         )
+    //         .execute(&self.pool)
+    //         .await?;
+
+    //         Ok(())
+    //     }
+
+    //     async fn get_all_update_messages<S: AsRef<str>>(
+    //         &self,
+    //         module: S,
+    //     ) -> Result<Vec<CommandMessage>> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         let rows = sqlx::query!(
+    //             "SELECT data FROM updates WHERE module_id = ?1 AND type = ?2",
+    //             module_id.id,
+    //             "message"
+    //         )
+    //         .fetch_all(&self.pool)
+    //         .await?;
+
+    //         Ok(rows
+    //             .into_iter()
+    //             .map(|r| serde_json::from_str(r.data.as_str()))
+    //             .collect::<Result<Vec<_>, _>>()?)
+    //     }
+
+    //     async fn remove_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<()> {
+    //         let module = module.as_ref();
+
+    //         // Retrieve the ID of the module
+    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+    //             .fetch_one(&self.pool)
+    //             .await?;
+
+    //         sqlx::query!(
+    //             "DELETE FROM updates WHERE module_id = ?1 AND type = ?2",
+    //             module_id.id,
+    //             "message",
+    //         )
+    //         .execute(&self.pool)
+    //         .await?;
+
+    //         Ok(())
+    //     }
 }
 
 // -------------------------------------------------------------------------------------------------

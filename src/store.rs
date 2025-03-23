@@ -3,7 +3,10 @@
 //! Provided functionality include the creation of checksums for files, backing them up, storing
 //! their source and target as well as their associated module.
 
+use crate::modules::tasks::ModuleTask;
+use crate::modules::messages::CommandMessage;
 use crate::config::DotdeployConfig;
+use crate::phases::DeployPhaseStruct;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
@@ -491,14 +494,37 @@ pub(crate) trait Store {
     async fn get_all_packages(&self) -> Result<Vec<String>>;
 
     // --
-    // * Removal
+    // * Removal & Updates
 
-    // FIXME 2025-03-21: Do we want to cache the tasks and messages for removal phase? Or just read
-    //   them from config? Do we want to cache the config and parse it again?
-    // async fn add_remove_task();
-    // async fn remove_remove_task();
-    // async fn add_remove_message();
-    // async fn remove_remove_message();
+    // FIXME 2025-03-22: All of this is pretty redundant and can probably be implemented similar to
+    //   https://users.rust-lang.org/t/limit-a-generic-type-to-be-either-a-or-b/66367/7
+    // async fn add_removal_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()>;
+
+    // async fn get_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>>;
+    async fn cache_phase<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()>;
+
+    async fn get_all_cached_tasks<S: AsRef<str>>(&self, phase: S) -> Option<DeployPhaseStruct>;
+
+    // async fn remove_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<()>;
+
+    async fn cache_message<S: AsRef<str>>(&self, command: S, message: CommandMessage) -> Result<()>;
+
+    async fn get_all_cached_messages<S: AsRef<str>>(&self, module: S, command: S) -> Result<Vec<CommandMessage>>;
+
+    async fn remove_all_cached_messages<S: AsRef<str>>(&self, module: S, command: S) -> Result<()>;
+
+    // async fn add_update_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()>;
+
+    // async fn get_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>>;
+
+    // async fn remove_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<()>;
+
+    // async fn add_update_message<S: AsRef<str>>(&self, message: CommandMessage) -> Result<()>;
+
+    // async fn get_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<Vec<CommandMessage>>;
+
+    // async fn remove_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<()>;
+
 }
 
 // -------------------------------------------------------------------------------------------------

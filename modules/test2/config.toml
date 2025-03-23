@@ -1,0 +1,13 @@
+depends_on = ["test3"]
+
+[[messages]]
+message = """
+Hello there from test2
+"""
+
+[[tasks]]
+exec = "$DOD_CURRENT_MODULE/test_foo.sh"
+sudo = false
+args = ["arg1", "arg2"]
+phase = "config"
+hook = "post"

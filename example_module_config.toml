@@ -74,6 +74,33 @@ Hello there :)
 message = "Hello there :) 2"
 if = "(eq DOD_DISTRIBUTION_NAME 'gentoo')"
 
+[[messages]]
+message = "Hello there :) from remove"
+on_command = "remove"
+
+# [[messages]]
+# message = "Hello there :) from update"
+# on_command = "update"
+
+[[messages]]
+message = "Hello there :) from update 2"
+on_command = "update"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["Running remove ..."]
+phase = "remove"
+hook = "pre"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["Running update task ..."]
+phase = "update"
+hook = "post"
+
+
 [[generators]]
 target = "$HOME/.bla.sh"
 source = "bla.sh"

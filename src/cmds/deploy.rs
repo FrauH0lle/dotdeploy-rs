@@ -74,7 +74,8 @@ pub(crate) async fn deploy(
     pm: Arc<PrivilegeManager>,
 ) -> Result<bool> {
     let mut mod_queue = ModulesQueueBuilder::new()
-        .with_modules(modules)
+        // FIXME 2025-03-22: Avoid clone
+        .with_modules(modules.clone())
         .build(&config)?;
 
     mod_queue
@@ -99,8 +100,15 @@ pub(crate) async fn deploy(
             .await?
     }
 
-    let (mut setup_phase, mut config_phase, packages, file_generators, module_messages) =
-        mod_queue.process(Arc::clone(&config)).await?;
+    let (
+        mut setup_phase,
+        mut config_phase,
+        mut update_phase,
+        mut remove_phase,
+        packages,
+        file_generators,
+        module_messages,
+    ) = mod_queue.process(Arc::clone(&config)).await?;
 
     let op_tye = "copy";
 
@@ -258,10 +266,7 @@ pub(crate) async fn deploy(
             // REVIEW 2025-03-21: Remove empty string
             obsolete.retain(|p| !p.is_empty());
             if !obsolete.is_empty() {
-                let obsolete = obsolete
-                    .into_iter()
-                    .map(OsString::from)
-                    .collect::<Vec<_>>();
+                let obsolete = obsolete.into_iter().map(OsString::from).collect::<Vec<_>>();
                 common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &obsolete, &pm)
                     .await?;
             }
@@ -313,14 +318,45 @@ pub(crate) async fn deploy(
     }
     debug!("Generating files complete");
 
-    // Display messages
+    // Display messages and update cache
     debug!("Displaying messages");
-    for msg in module_messages
-        .into_iter()
-        .filter(|m| m.on_command.as_deref() == Some("deploy"))
-    {
-        info!("Message for {}:\n{}", msg.module_name, msg.message)
+
+    // Drop old messages
+    for module in modules.iter() {
+        stores
+            .user_store
+            .remove_all_cached_messages(module.as_str(), "update")
+            .await?;
+        stores
+            .user_store
+            .remove_all_cached_messages(module.as_str(), "remove")
+            .await?;
     }
+
+
+
+    // Add new messages
+    for msg in module_messages.into_iter() {
+        match msg.on_command.as_deref() {
+            Some("deploy") => info!("Message for {}:\n{}", msg.module_name, msg.message),
+            Some("update") => stores.user_store.cache_message("update", msg).await?,
+            Some("remove") => stores.user_store.cache_message("remove", msg).await?,
+            _ => unreachable!(),
+        }
+    }
+
+    // Cache update and remove phase
+    if let Some(mut cached_update_tasks) = stores.user_store.get_all_cached_tasks("update").await {
+        cached_update_tasks.tasks.retain(|t| !modules.contains(&t.module_name));
+        update_phase.tasks.append(&mut cached_update_tasks.tasks);
+    }
+    if let Some(mut cached_remove_tasks) = stores.user_store.get_all_cached_tasks("remove").await {
+        cached_remove_tasks.tasks.retain(|t| !modules.contains(&t.module_name));
+        remove_phase.tasks.append(&mut cached_remove_tasks.tasks);
+    }
+
+    stores.user_store.cache_phase("update", update_phase).await?;
+    stores.user_store.cache_phase("remove", remove_phase).await?;
 
     debug!("Deploy command complete");
     Ok(true)

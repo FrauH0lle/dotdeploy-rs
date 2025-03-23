@@ -14,8 +14,9 @@ use std::sync::Arc;
 use tokio::fs;
 use toml::Value;
 use tracing::{debug, info};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub(crate) enum PhaseFileOp {
     Copy,
     #[default]
@@ -23,7 +24,7 @@ pub(crate) enum PhaseFileOp {
     Create,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub(crate) struct PhaseFile {
     pub(crate) module_name: String,
     pub(crate) source: Option<PathBuf>,

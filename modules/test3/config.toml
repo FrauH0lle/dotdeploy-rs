@@ -1,0 +1,10 @@
+[[messages]]
+message = """
+Hello there from test3
+"""
+
+# Wildcard files
+[[files]]
+source = "dot-foo-dir/*"
+target = "$HOME/dot-foo-dir/*"
+type = "link"

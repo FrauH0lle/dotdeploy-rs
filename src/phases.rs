@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use toml::Value;
+use serde::{Deserialize, Serialize};
 
 pub(crate) mod file;
 pub(crate) mod task;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct DeployPhaseStruct {
     pub(crate) files: Vec<PhaseFile>,
     pub(crate) tasks: Vec<PhaseTask>,

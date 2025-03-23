@@ -15,7 +15,7 @@ use tracing::{error, instrument};
 
 pub(crate) mod files;
 mod generate_file;
-mod messages;
+pub(crate) mod messages;
 mod packages;
 pub(crate) mod queue;
 pub(crate) mod tasks;

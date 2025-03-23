@@ -109,6 +109,8 @@ impl ModulesQueue {
     ) -> Result<(
         DeployPhaseStruct,
         DeployPhaseStruct,
+        DeployPhaseStruct,
+        DeployPhaseStruct,
         Vec<InstallPackage>,
         Vec<Generate>,
         Vec<CommandMessage>,
@@ -116,8 +118,12 @@ impl ModulesQueue {
         // Initialize phase containers for each deployment stage
         // - setup: preparation tasks before deployment
         // - config: post-deployment configuration
+        // - update: post-deployment updates
+        // - remove: deployment removal configuration
         let setup_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
         let config_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
+        let update_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
+        let remove_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
 
         // Initialize messages container
         let messages = Arc::new(Mutex::new(Vec::new()));
@@ -133,6 +139,8 @@ impl ModulesQueue {
         while let Some(mut module) = self.modules.pop() {
             let setup_phase = Arc::clone(&setup_phase);
             let config_phase = Arc::clone(&config_phase);
+            let update_phase = Arc::clone(&update_phase);
+            let remove_phase = Arc::clone(&remove_phase);
             let seen_files = Arc::clone(&seen_files);
             let config = Arc::clone(&config);
             let messages = Arc::clone(&messages);
@@ -154,7 +162,7 @@ impl ModulesQueue {
                 };
 
                 if let Some(tasks) = module.tasks.take() {
-                    Self::process_tasks(tasks, &mut module, &setup_phase, &config_phase).await?;
+                    Self::process_tasks(tasks, &mut module, &setup_phase, &config_phase, &update_phase, &remove_phase).await?;
                 };
 
                 if let Some(module_messages) = module.messages.take() {
@@ -244,6 +252,12 @@ impl ModulesQueue {
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
             Arc::try_unwrap(config_phase)
+                .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
+                .into_inner()?,
+            Arc::try_unwrap(update_phase)
+                .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
+                .into_inner()?,
+            Arc::try_unwrap(remove_phase)
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
             Arc::try_unwrap(packages)
@@ -604,6 +618,8 @@ impl ModulesQueue {
         module: &mut DotdeployModule,
         setup_phase: &Arc<Mutex<DeployPhaseStruct>>,
         config_phase: &Arc<Mutex<DeployPhaseStruct>>,
+        update_phase: &Arc<Mutex<DeployPhaseStruct>>,
+        remove_phase: &Arc<Mutex<DeployPhaseStruct>>,
     ) -> Result<()> {
         for task in tasks {
             let ModuleTask {
@@ -650,7 +666,18 @@ impl ModulesQueue {
                     .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
                     .tasks
                     .push(phase_task),
-                other => return Err(eyre!("Invalid phase specified: {:?}", other)),
+                DeployPhase::Update => update_phase
+                    .lock()
+                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
+                    .tasks
+                    .push(phase_task),
+                DeployPhase::Remove => remove_phase
+                    .lock()
+                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
+                    .tasks
+                    .push(phase_task),
+
+                // other => return Err(eyre!("Invalid phase specified: {:?}", other)),
             }
         }
         Ok(())
