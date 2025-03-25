@@ -3,23 +3,25 @@ use crate::modules::DeployPhase;
 use crate::modules::files::ModuleFile;
 use crate::modules::generate_file::Generate;
 use crate::modules::messages::CommandMessage;
+use crate::modules::packages::InstallPackage;
 use crate::modules::tasks::ModuleTask;
 use crate::modules::{DotdeployModule, DotdeployModuleBuilder};
 use crate::phases::DeployPhaseStruct;
-use crate::phases::file::{PhaseFile, PhaseFileOp};
+use crate::phases::file::PhaseFileBuilder;
 use crate::phases::task::{PhaseHook, PhaseTask};
+use crate::utils::common::bytes_to_os_str;
 use crate::utils::file_fs;
+use bstr::ByteSlice;
 use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Report, Result, Section};
 use handlebars::Handlebars;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 use toml::Value;
-
-use super::packages::InstallPackage;
 
 /// Represents a queue of modules to be processed for deployment.
 #[derive(Debug)]
@@ -33,15 +35,21 @@ impl ModulesQueue {
     ///
     /// Populates the `DOD_MODULES` key in the context with an array of module names. This array can
     /// be used in handlebars templates to reference other modules.
+    /// Returns the module names.
     ///
     /// * `context` - Mutable reference to template context being built
-    pub(crate) fn collect_module_names(&self, context: &mut HashMap<String, Value>) -> Result<()> {
+    pub(crate) fn collect_module_names(&self, context: &mut HashMap<String, Value>) -> Vec<String> {
         let mut names = vec![];
         for module in self.modules.iter() {
-            names.push(Value::String(module.name.clone()));
+            names.push(module.name.clone());
         }
-        context.insert("DOD_MODULES".to_string(), Value::Array(names));
-        Ok(())
+
+        context.insert(
+            "DOD_MODULES".to_string(),
+            Value::Array(names.iter().map(|n| Value::String(n.to_string())).collect()),
+        );
+
+        names
     }
 
     /// Merges module-specific context variables into the global context
@@ -93,16 +101,23 @@ impl ModulesQueue {
     ///
     /// Transforms module configurations into executable deployment phases:
     /// - Expands file paths and wildcards
-    /// - Organizes files into setup/config phases
+    /// - Organizes files into appropriate phases (setup/config/update/remove)
     /// - Handles template configuration for files
+    /// - Collects packages, generators, and messages
     ///
     /// # Returns
-    /// Tuple containing three deployment phases: (setup, deploy, config)
+    /// Tuple containing:
+    /// - Four deployment phases: (setup, config, update, remove)
+    /// - Vector of packages to install
+    /// - Vector of file generators
+    /// - Vector of command messages
     ///
     /// # Errors
     /// * Returns error for invalid wildcard usage
     /// * Returns error for missing template configuration
     /// * Returns error for invalid phase specification
+    /// * Returns error for concurrent access failures
+    /// * Returns error for Arc unwrapping failures
     pub(crate) async fn process(
         &mut self,
         config: Arc<DotdeployConfig>,
@@ -132,7 +147,7 @@ impl ModulesQueue {
         // Initialize packages container
         let packages = Arc::new(Mutex::new(Vec::new()));
 
-        let seen_files = Arc::new(Mutex::new(HashSet::<String>::new()));
+        let seen_files = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
 
         let mut set: JoinSet<Result<(), Report>> = JoinSet::new();
 
@@ -162,7 +177,15 @@ impl ModulesQueue {
                 };
 
                 if let Some(tasks) = module.tasks.take() {
-                    Self::process_tasks(tasks, &mut module, &setup_phase, &config_phase, &update_phase, &remove_phase).await?;
+                    Self::process_tasks(
+                        tasks,
+                        &mut module,
+                        &setup_phase,
+                        &config_phase,
+                        &update_phase,
+                        &remove_phase,
+                    )
+                    .await?;
                 };
 
                 if let Some(module_messages) = module.messages.take() {
@@ -204,7 +227,6 @@ impl ModulesQueue {
                 }
 
                 if let Some(module_packages) = module.packages.take() {
-                    dbg!(&module_packages);
                     for pkgs in module_packages.into_iter() {
                         // FIXME 2025-03-21: Now we have to handle an empty string in the packages
                         if pkgs.install.is_empty() {
@@ -233,19 +255,7 @@ impl ModulesQueue {
         }
 
         // Wait for all operations to complete
-        let results = set.join_all().await.into_iter().collect::<Vec<_>>();
-        if results.iter().any(|r| r.is_err()) {
-            // Collect and combine errors
-            let err = results
-                .into_iter()
-                .filter(Result::is_err)
-                .map(Result::unwrap_err)
-                .fold(eyre!("Failed to process modules"), |report, e| {
-                    report.with_error(|| crate::errors::StrError(format!("{:?}", e)))
-                });
-
-            return Err(err);
-        }
+        crate::errors::join_errors(set.join_all().await)?;
 
         Ok((
             Arc::try_unwrap(setup_phase)
@@ -298,7 +308,7 @@ impl ModulesQueue {
         setup_phase: &Arc<Mutex<DeployPhaseStruct>>,
         config_phase: &Arc<Mutex<DeployPhaseStruct>>,
         config: &Arc<DotdeployConfig>,
-        seen_files: &Arc<Mutex<HashSet<String>>>,
+        seen_files: &Arc<Mutex<HashSet<PathBuf>>>,
     ) -> Result<()> {
         let mut phase_files = vec![];
 
@@ -319,12 +329,13 @@ impl ModulesQueue {
 
             // Expand source file names
             if let Some(ref mut source) = source {
-                *source = Self::expand_source_path(source, module)
+                *source = Self::expand_source_path(&source, module)
                     .await
                     .wrap_err_with(|| {
                         format!(
                             "Failed to expand source path in module={} for file={}",
-                            &module.name, &source
+                            &module.name,
+                            &source.display()
                         )
                     })?;
             }
@@ -335,18 +346,18 @@ impl ModulesQueue {
                 .wrap_err_with(|| {
                     format!(
                         "Failed to expand target path in module={} for file={}",
-                        &module.name, &target
+                        &module.name,
+                        &target.display()
                     )
                 })?;
 
             // Check that if target is outside of user's HOME directory, deploy_sys_files is true
-            if target.starts_with(&file_fs::path_to_string(
-                dirs::home_dir().ok_or_eyre("Failed to get user's HOME dir")?,
-            )?) && !&config.deploy_sys_files
+            if target.starts_with(dirs::home_dir().ok_or_eyre("Failed to get user's HOME dir")?)
+                && !&config.deploy_sys_files
             {
                 return Err(eyre!(
                     "{} is outside of your HOME directory but this feature is currently disabled",
-                    &target
+                    &target.display()
                 )
                 .suggestion("Check the value of 'deploy_sys_files' in the dotdeploy config"));
             }
@@ -364,25 +375,34 @@ impl ModulesQueue {
                         .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
                         .insert(expanded_target.clone())
                     {
-                        return Err(eyre!("{} declared multiple times", &expanded_target));
+                        return Err(eyre!(
+                            "{} declared multiple times",
+                            &expanded_target.display()
+                        ));
                     }
 
                     phase_files.push(
-                        Self::build_phase_files(
-                            &Some(expanded_source),
-                            &expanded_target,
-                            module,
-                            content.clone(),
-                            operation.clone(),
-                            template,
-                            owner.clone(),
-                            group.clone(),
-                            permissions.clone(),
-                        )
-                        .await
-                        .wrap_err_with(|| {
-                            format!("Failed to build PhaseFile for file={}", &expanded_target)
-                        })?,
+                        PhaseFileBuilder::default()
+                            .with_module_name(&module.name)
+                            .with_source(Some(PathBuf::from(&expanded_source)))
+                            .with_target(&expanded_target)
+                            .with_content(content.clone())
+                            .with_operation(operation.clone())
+                            .with_template(template.ok_or_eyre(format!(
+                                "Template field required for file={} in module={}",
+                                &expanded_target.display(),
+                                &module.name
+                            ))?)
+                            .with_owner(owner.clone())
+                            .with_group(group.clone())
+                            .with_permissions(permissions.clone())
+                            .build()
+                            .wrap_err_with(|| {
+                                format!(
+                                    "Failed to build PhaseFile for file={}",
+                                    &expanded_target.display()
+                                )
+                            })?,
                     );
                 }
             } else {
@@ -391,26 +411,31 @@ impl ModulesQueue {
                     .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
                     .insert(target.clone())
                 {
-                    return Err(eyre!("{} declared multiple times", &target));
+                    return Err(eyre!("{} declared multiple times", &target.display()));
                 }
 
                 phase_files.push(
-                    Self::build_phase_files(
-                        &source,
-                        &target,
-                        module,
-                        content,
-                        operation,
-                        template,
-                        owner,
-                        group,
-                        permissions,
-                    )
-                    .await
-                    .wrap_err_with(|| format!("Failed to build PhaseFile for file={}", &target))?,
+                    PhaseFileBuilder::default()
+                        .with_module_name(&module.name)
+                        .with_source(source.as_ref().map(PathBuf::from))
+                        .with_target(&target)
+                        .with_content(content)
+                        .with_operation(operation)
+                        .with_template(template.ok_or_eyre(format!(
+                            "Template field required for file={} in module={}",
+                            &target.display(),
+                            &module.name
+                        ))?)
+                        .with_owner(owner)
+                        .with_group(group)
+                        .with_permissions(permissions)
+                        .build()
+                        .wrap_err_with(|| {
+                            format!("Failed to build PhaseFile for file={}", &target.display())
+                        })?,
                 );
             }
-            dbg!(&phase, &phase_files);
+
             match phase {
                 DeployPhase::Setup => setup_phase
                     .lock()
@@ -436,37 +461,33 @@ impl ModulesQueue {
     /// current module's location.
     ///
     /// # Arguments
-    /// * `source` - Source path string, possibly containing env vars
+    /// * `source` - Source path, possibly containing env vars
     /// * `module` - Module providing location context
     ///
     /// # Returns
-    /// Fully expanded absolute path as a string
+    /// Fully expanded absolute path
     ///
     /// # Errors
     /// * Returns error if path expansion fails
-    async fn expand_source_path(source: &str, module: &DotdeployModule) -> Result<String> {
+    async fn expand_source_path<P: AsRef<Path>>(
+        source: P,
+        module: &DotdeployModule,
+    ) -> Result<PathBuf> {
         // Make the current module location available as an env var
         let mut env = HashMap::new();
-        env.insert(
-            "DOD_CURRENT_MODULE".to_string(),
-            file_fs::path_to_string(module.location.clone())?,
-        );
+        env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
 
         // Expand env vars in path
-        let expanded = file_fs::expand_path_string(source, Some(&env))?;
+        let expanded = file_fs::expand_path(source, Some(&env))?;
+
         // If the path start with '/' we assume it is absolute
-        if expanded.starts_with('/') {
+        if expanded.starts_with("/") {
             Ok(expanded)
         } else {
             // Otherwise, expand it relative to the current module directory
-            file_fs::expand_path_string(
-                &format!(
-                    "$DOD_CURRENT_MODULE{}{}",
-                    std::path::MAIN_SEPARATOR_STR,
-                    &expanded
-                ),
-                Some(&env),
-            )
+            let mut path = PathBuf::from(&module.location);
+            path.push(expanded);
+            Ok(path)
         }
     }
 
@@ -476,32 +497,37 @@ impl ModulesQueue {
     /// are rejected as invalid targets.
     ///
     /// # Arguments
-    /// * `target` - Target path string, possibly containing env vars
+    /// * `target` - Target path, possibly containing env vars
     /// * `module` - Module providing location context
     ///
     /// # Returns
-    /// Fully expanded absolute path as a string
+    /// Fully expanded absolute path
     ///
     /// # Errors
     /// * Returns error if path expansion fails
     /// * Returns error if target path is not absolute
-    async fn expand_target_path(target: &str, module: &DotdeployModule) -> Result<String> {
+    async fn expand_target_path<P: AsRef<Path>>(
+        target: P,
+        module: &DotdeployModule,
+    ) -> Result<PathBuf> {
         // Make the current module location available as an env var
         let mut env = HashMap::new();
-        env.insert(
-            "DOD_CURRENT_MODULE".to_string(),
-            file_fs::path_to_string(module.location.clone())?,
-        );
+        env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
 
-        let expanded = file_fs::expand_path_string(target, Some(&env))?.replace("##dot##", ".");
+        let expanded = PathBuf::from(bytes_to_os_str(
+            file_fs::expand_path(&target, Some(&env))?
+                .as_os_str()
+                .as_bytes()
+                .replace("##dot##", "."),
+        ));
 
-        if expanded.starts_with('/') {
+        if expanded.starts_with("/") {
             Ok(expanded)
         } else {
             Err(eyre!(
                 "Invalid target file name: {} -> {}",
-                target,
-                expanded
+                target.as_ref().display(),
+                expanded.display()
             ))
         }
     }
@@ -524,75 +550,27 @@ impl ModulesQueue {
     /// # Errors
     /// * Returns error if only one path has a wildcard
     /// * Returns error if target has wildcard but source is None
-    async fn handle_wildcard_expansion(
-        source: &Option<String>,
-        target: &str,
-    ) -> Result<Option<Vec<(String, String)>>> {
+    async fn handle_wildcard_expansion<P: AsRef<Path>>(
+        source: &Option<P>,
+        target: &P,
+    ) -> Result<Option<Vec<(PathBuf, PathBuf)>>> {
         match (source.as_ref(), target) {
-            (Some(src), tgt) if src.ends_with('*') && tgt.ends_with('*') => {
+            (Some(src), tgt) if src.as_ref().ends_with("*") && tgt.as_ref().ends_with("*") => {
                 Ok(Some(expand_wildcards(src, tgt)?))
             }
-            (Some(src), tgt) if src.ends_with('*') || tgt.ends_with('*') => Err(eyre!(
-                "Both source and target must end with '*' for wildcard expansion: source={}, target={}",
-                src,
-                tgt
-            )),
-            (None, tgt) if tgt.ends_with('*') => Err(eyre!(
+            (Some(src), tgt) if src.as_ref().ends_with("*") || tgt.as_ref().ends_with("*") => {
+                Err(eyre!(
+                    "Both source and target must end with '*' for wildcard expansion: source={}, target={}",
+                    src.as_ref().display(),
+                    tgt.as_ref().display()
+                ))
+            }
+            (None, tgt) if tgt.as_ref().ends_with("*") => Err(eyre!(
                 "Target '{}' has wildcard but source is not specified",
-                tgt
+                tgt.as_ref().display()
             )),
             _ => Ok(None),
         }
-    }
-
-    /// Builds a PhaseFile structure from file configuration
-    ///
-    /// Creates a deployment phase file entry with all necessary metadata for file operations during
-    /// deployment.
-    ///
-    /// # Arguments
-    /// * `source` - Optional source path for the file
-    /// * `target` - Target path where file will be deployed
-    /// * `module` - Module this file belongs to
-    /// * `content` - Optional inline content for the file
-    /// * `operation` - File operation type (copy/link/create)
-    /// * `template` - Whether file should be processed as a template
-    /// * `owner` - Optional file ownership specification
-    /// * `group` - Optional file group specification
-    /// * `permissions` - Optional file permissions specification
-    ///
-    /// # Errors
-    /// * Returns error if required fields are missing
-    async fn build_phase_files(
-        source: &Option<String>,
-        target: &str,
-        module: &DotdeployModule,
-        content: Option<String>,
-        operation: Option<String>,
-        template: Option<bool>,
-        owner: Option<String>,
-        group: Option<String>,
-        permissions: Option<String>,
-    ) -> Result<PhaseFile> {
-        Ok(PhaseFile {
-            module_name: module.name.clone(),
-            source: source.as_ref().map(PathBuf::from),
-            target: PathBuf::from(target),
-            content,
-            operation: match operation.as_deref() {
-                Some("copy") => PhaseFileOp::Copy,
-                Some("link") => PhaseFileOp::Link,
-                Some("create") => PhaseFileOp::Create,
-                _ => unreachable!(),
-            },
-            template: template.ok_or_eyre(format!(
-                "Template field required for expanded file={} in module={}",
-                &target, &module.name
-            ))?,
-            owner,
-            group,
-            permissions,
-        })
     }
 
     /// Processes module tasks and distributes them to appropriate deployment phases
@@ -626,6 +604,7 @@ impl ModulesQueue {
                 shell,
                 exec,
                 args,
+                expand_args,
                 sudo,
                 phase,
                 hook,
@@ -638,15 +617,15 @@ impl ModulesQueue {
                 exec: exec
                     .map(|x| {
                         let mut env = HashMap::new();
-                        env.insert(
-                            "DOD_CURRENT_MODULE".to_string(),
-                            file_fs::path_to_string(module.location.clone())?,
-                        );
-                        file_fs::expand_path_string(&x, Some(&env))
-                            .map_err(|e| eyre!("Failed to expand path '{}': {:?}", x, e))
+                        env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
+                        file_fs::expand_path(&x, Some(&env)).map_err(|e| {
+                            eyre!("Failed to expand path '{}': {:?}", x.to_string_lossy(), e)
+                        })
                     })
-                    .transpose()?,
+                    .transpose()?
+                    .map(PathBuf::into_os_string),
                 args,
+                expand_args: expand_args.ok_or_eyre("expand_args field required")?,
                 sudo: sudo.ok_or_eyre("sudo field required")?,
                 hook: match hook.as_deref() {
                     Some("pre") => PhaseHook::Pre,
@@ -676,7 +655,6 @@ impl ModulesQueue {
                     .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
                     .tasks
                     .push(phase_task),
-
                 // other => return Err(eyre!("Invalid phase specified: {:?}", other)),
             }
         }
@@ -811,22 +789,31 @@ impl ModulesQueueBuilder {
 /// * Returns error if source directory cannot be read
 /// * Returns error if no files are found in source directory
 /// * Returns error if file paths contain invalid UTF-8
-fn expand_wildcards(source: &str, target: &str) -> Result<Vec<(String, String)>> {
+fn expand_wildcards<P: AsRef<Path>>(source: P, target: P) -> Result<Vec<(PathBuf, PathBuf)>> {
     // Validate both paths end with '*'
-    if !source.ends_with('*') || !target.ends_with('*') {
+    if !source.as_ref().ends_with("*") || !target.as_ref().ends_with("*") {
         return Err(eyre!(
             "Both source and target must end with '*' for wildcard expansion"
         ));
     }
 
     // Get the parent directories by removing the wildcard
-    let source_parent = source.trim_end_matches('*').trim_end_matches('/');
-    let target_parent = target.trim_end_matches('*').trim_end_matches('/');
+    let source_parent = source
+        .as_ref()
+        .parent()
+        .ok_or_else(|| eyre!("Failed to get parent of {}", source.as_ref().display()))?;
+    let target_parent = target
+        .as_ref()
+        .parent()
+        .ok_or_else(|| eyre!("Failed to get parent of {}", target.as_ref().display()))?;
 
     // Read the source directory
-    let source_dir = Path::new(source_parent);
-    let entries = std::fs::read_dir(source_dir)
-        .wrap_err_with(|| format!("Failed to read source directory: {}", source_dir.display()))?;
+    let entries = std::fs::read_dir(source_parent).wrap_err_with(|| {
+        format!(
+            "Failed to read source directory: {}",
+            source_parent.display()
+        )
+    })?;
 
     // Create expanded pairs
     let mut expanded = Vec::new();
@@ -839,25 +826,19 @@ fn expand_wildcards(source: &str, target: &str) -> Result<Vec<(String, String)>>
             continue; // Optionally skip directories
         }
 
-        let file_name = entry_path
+        let file_name = &entry_path
             .file_name()
-            .ok_or_eyre("Failed to get file name")?
-            .to_str()
-            .ok_or_eyre("File name contains invalid UTF-8")?;
+            .ok_or_eyre("Failed to get file name")?;
 
-        let expanded_source = entry_path
-            .to_str()
-            .ok_or_eyre("Path contains invalid UTF-8")?
-            .to_string();
-
-        let expanded_target = format!("{}/{}", target_parent, file_name);
+        let expanded_source = entry_path.to_path_buf();
+        let expanded_target = target_parent.join(&file_name);
         expanded.push((expanded_source, expanded_target));
     }
 
     if expanded.is_empty() {
         return Err(eyre!(
             "No files found in source directory: {}",
-            source_parent
+            source_parent.display()
         ));
     }
 
@@ -887,7 +868,7 @@ mod tests {
         // Empty queue
         let queue = ModulesQueue { modules: vec![] };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context)?;
+        queue.collect_module_names(&mut context);
 
         let names = context
             .get("DOD_MODULES")
@@ -903,7 +884,7 @@ mod tests {
             modules: vec![module],
         };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context)?;
+        queue.collect_module_names(&mut context);
 
         let names = context["DOD_MODULES"]
             .as_array()
@@ -924,7 +905,7 @@ mod tests {
         ];
         let queue = ModulesQueue { modules };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context)?;
+        queue.collect_module_names(&mut context);
 
         let names = context["DOD_MODULES"]
             .as_array()
@@ -952,19 +933,13 @@ mod tests {
         let file2 = dir.path().join("file2.txt");
         std::fs::write(&file2, b"")?;
 
-        let source = format!("{}/*", dir.path().to_str().unwrap());
-        let target = "/dest/*";
-        let pairs = expand_wildcards(&source, target)?;
+        let source = dir.path().join("*");
+        let target = PathBuf::from("/dest/*");
+        let pairs = expand_wildcards(&source, &target)?;
 
         let mut expected = vec![
-            (
-                file1.to_str().unwrap().to_string(),
-                "/dest/file1.txt".to_string(),
-            ),
-            (
-                file2.to_str().unwrap().to_string(),
-                "/dest/file2.txt".to_string(),
-            ),
+            (file1, PathBuf::from("/dest/file1.txt")),
+            (file2, PathBuf::from("/dest/file2.txt")),
         ];
         expected.sort();
 
@@ -982,14 +957,14 @@ mod tests {
 
         // Test empty directory
         let empty_dir = tempdir()?;
-        let empty_source = format!("{}/*", empty_dir.path().to_str().unwrap());
-        let result = expand_wildcards(&empty_source, "/dest/*");
+        let empty_source = empty_dir.path().join("*");
+        let result = expand_wildcards(&empty_source, &PathBuf::from("/dest/*"));
         assert!(result.is_err(), "Should error on empty directory");
 
         // Test directory with subdirectory
         let sub_dir = dir.path().join("subdir");
         std::fs::create_dir(&sub_dir)?;
-        let result = expand_wildcards(&source, target)?;
+        let result = expand_wildcards(&source, &target)?;
         assert_eq!(result.len(), 2, "Should ignore directories");
 
         // Test non-existent directory
@@ -1004,8 +979,8 @@ mod tests {
         let dir = tempdir()?;
         let file = dir.path().join("ñáéíóú.txt");
         std::fs::write(&file, b"")?;
-        let source = format!("{}/*", dir.path().to_str().unwrap());
-        let pairs = expand_wildcards(&source, "/dest/*")?;
+        let source = dir.path().join("*");
+        let pairs = expand_wildcards(&source, &PathBuf::from("/dest/*"))?;
         assert!(!pairs.is_empty(), "Should handle UTF-8 filenames");
 
         Ok(())

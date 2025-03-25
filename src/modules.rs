@@ -1,5 +1,6 @@
 use crate::config::DotdeployConfig;
 use crate::modules::files::ModuleFile;
+use crate::modules::files::FileOperation;
 use crate::modules::generate_file::Generate;
 use crate::modules::messages::ModuleMessage;
 use crate::modules::tasks::ModuleTask;
@@ -9,9 +10,9 @@ use handlebars::Handlebars;
 use packages::ModulePackages;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use toml::Value;
-use tracing::{error, instrument};
 
 pub(crate) mod files;
 mod generate_file;
@@ -38,21 +39,53 @@ pub(crate) struct DotdeployModule {
     pub(crate) messages: Option<Vec<ModuleMessage>>,
     /// Messages to be displayed during module execution
     pub(crate) generators: Option<Vec<Generate>>,
-    // FIXME 2025-03-21: Does this still need to be an Option?
-    /// Messages to be displayed during module execution
+    /// Packages to install for this module
     pub(crate) packages: Option<Vec<ModulePackages>>,
     /// Key-value pairs used for handlebars templating
     pub(crate) context_vars: Option<HashMap<String, Value>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub(crate) enum DeployPhase {
     Setup,
     #[default]
     Config,
     Update,
     Remove,
+}
+
+/// Filters and retains components based on condition evaluation
+///
+/// Internal helper macro that processes a module's component collections (files, tasks, etc.),
+/// retaining only elements whose conditions evaluate successfully to `true`. Handles error logging
+/// consistently while maintaining component-specific context details.
+macro_rules! retain_components {
+    ($self:ident, $field:ident, $context:ident, $hb:ident) => {
+        if let Some(ref mut components) = $self.$field {
+            components.retain(|component| {
+                component
+                    .eval_condition($context, $hb)
+                    .unwrap_or_else(|err| {
+                        component.log_error(&$self.name, &$self.location, err);
+                        false
+                    })
+            });
+        }
+    };
+}
+
+/// Defines error logging contract for conditionally evaluated components
+///
+/// Implemented by all component types (files, tasks, etc.) to provide consistent error reporting
+/// while preserving component-specific context in logs.
+trait ConditionalComponent {
+    /// Records condition evaluation failures with component-specific metadata
+    ///
+    /// * `module_name` - Parent module where error occurred  
+    /// * `location` - Module configuration path
+    /// * `err` - Error details from evaluation failure
+    fn log_error(&self, module_name: &str, location: &Path, err: impl std::fmt::Display);
 }
 
 impl DotdeployModule {
@@ -76,18 +109,22 @@ impl DotdeployModule {
                     return Err(eyre!(
                         "{}:{}\n A file can have either source OR content defined",
                         &self.location.display(),
-                        &file.target
+                        &file.target.display()
                     ));
                 }
 
                 // Check if template is used only for files with type "copy" or "create"
                 if file.template.is_some_and(|x| x)
-                    & file.operation.as_ref().is_some_and(|x| x == "link")
+                    & match file.operation {
+                        FileOperation::Copy => false,
+                        FileOperation::Link => true,
+                        FileOperation::Create => false,
+                    }
                 {
                     return Err(eyre!(
                         "{}:{}\n Templating is only allowed for operations of type 'create' or 'copy'",
                         &self.location.display(),
-                        &file.target
+                        &file.target.display()
                     ));
                 }
             }
@@ -100,13 +137,13 @@ impl DotdeployModule {
                     let command_display = match (&task.shell, &task.exec) {
                         (Some(shell), _) => shell,
                         (_, Some(exec)) => exec,
-                        _ => "<unknown>", // This shouldn't happen due to the condition above
+                        _ => &OsString::from("<unknown>")  // This shouldn't happen due to the condition above
                     };
-
+ 
                     return Err(eyre!(
                         "{}:command={}\n A task can be either a shell command OR an executable",
                         &self.location.display(),
-                        command_display
+                        command_display.to_string_lossy()
                     ));
                 }
             }
@@ -114,104 +151,40 @@ impl DotdeployModule {
         Ok(())
     }
 
-    #[instrument(skip(context))]
+    /// Evaluates conditional expressions for all module components and filters active ones
+    ///
+    /// Processes files, tasks, messages, generators, and packages to retain only components whose
+    /// `condition` templates evaluate to true. Errors during evaluation are logged but don't block
+    /// execution of other components.
+    ///
+    /// * `context` - Runtime variables and system information for template evaluation
+    /// * `hb` - Shared Handlebars registry with registered helpers
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(())` even if some components fail evaluation (errors are logged). Only returns
+    /// an error if there's a fundamental system failure (unlikely here).
     pub(crate) fn eval_conditions<T>(&mut self, context: &T, hb: &Handlebars<'static>) -> Result<()>
     where
         T: Serialize,
     {
-        // Evaluate file conditions
-        if let Some(ref mut files) = self.files {
-            files.retain(|f| {
-                f.eval_condition(context, hb).unwrap_or_else(|err| {
-                    // Log the error
-                    error!(
-                        module = self.name,
-                        location = self.location.as_path().to_str(),
-                        target_file = f.target,
-                        "Error during condition evaluation:\n{:?}\n",
-                        err
-                    );
-                    false
-                })
-            });
-        }
-
-        // Evaluate task conditions
-        if let Some(ref mut tasks) = self.tasks {
-            tasks.retain(|t| {
-                t.eval_condition(context, hb).unwrap_or_else(|err| {
-                    // Log the error
-                    error!(
-                        module = self.name,
-                        location = self.location.as_path().to_str(),
-                        task_exec = match (&t.shell, &t.exec) {
-                            (Some(shell), _) => shell,
-                            (_, Some(exec)) => exec,
-                            _ => "<unknown>",
-                        },
-                        "Error during condition evaluation:\n{:?}\n",
-                        err
-                    );
-                    false
-                })
-            });
-        }
-
-        // Evaluate message conditions
-        if let Some(ref mut messages) = self.messages {
-            messages.retain(|m| {
-                m.eval_condition(context, hb).unwrap_or_else(|err| {
-                    // Log the error
-                    error!(
-                        module = self.name,
-                        location = self.location.as_path().to_str(),
-                        msg = m.message,
-                        "Error during condition evaluation:\n{:?}\n",
-                        err
-                    );
-                    false
-                })
-            });
-        }
-
-        // Evaluate message conditions
-        if let Some(ref mut generators) = self.generators {
-            generators.retain(|g| {
-                g.eval_condition(context, hb).unwrap_or_else(|err| {
-                    // Log the error
-                    error!(
-                        module = self.name,
-                        location = self.location.as_path().to_str(),
-                        generate = g.target,
-                        "Error during condition evaluation:\n{:?}\n",
-                        err
-                    );
-                    false
-                })
-            });
-        }
-
-        // Evaluate package conditions
-        if let Some(ref mut packages) = self.packages {
-            packages.retain(|p| {
-                p.eval_condition(context, hb).unwrap_or_else(|err| {
-                    // Log the error
-                    error!(
-                        module = self.name,
-                        packages = p.install.join(" "),
-                        "Error during condition evaluation:\n{:?}\n",
-                        err
-                    );
-                    false
-                })
-            });
-        }
+        // Process files with conditional filtering
+        retain_components!(self, files, context, hb);
+        // Filter tasks based on their execution conditions
+        retain_components!(self, tasks, context, hb);
+        // Filter messages based on display conditions
+        retain_components!(self, messages, context, hb);
+        // Process generated file conditions
+        retain_components!(self, generators, context, hb);
+        // Filter packages based on installation conditions
+        retain_components!(self, packages, context, hb);
 
         Ok(())
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DotdeployModuleBuilder {
     __name__: Option<String>,
     __location__: Option<PathBuf>,
@@ -221,7 +194,6 @@ pub(crate) struct DotdeployModuleBuilder {
     tasks: Option<Vec<ModuleTask>>,
     messages: Option<Vec<ModuleMessage>>,
     generators: Option<Vec<Generate>>,
-    // FIXME 2025-03-21: Does this still need to be an Option?
     #[serde(default = "default_module_packages")]
     packages: Option<Vec<ModulePackages>>,
     context_vars: Option<HashMap<String, Value>>,
@@ -249,6 +221,10 @@ impl DotdeployModuleBuilder {
         Ok(config)
     }
 
+    /// Constructs a DotdeployModule instance from the builder's configuration
+    ///
+    /// # Errors
+    /// Returns an error if required fields (name/location) are missing
     pub(crate) fn build(&mut self, reason: String) -> Result<DotdeployModule> {
         Ok(DotdeployModule {
             name: Clone::clone(self.__name__.as_ref().ok_or_eyre("Empty 'name' field")?),
@@ -302,6 +278,16 @@ pub(crate) fn locate_module(
     Ok(path)
 }
 
+/// Evaluate a template condition.
+///
+/// * `context` - Context for template evaluation
+/// * `hb` - Handlebars registry with registered helpers
+///
+/// # Errors
+/// Returns an error if template rendering fails due to:
+/// * Invalid Handlebars syntax in condition
+/// * Missing context variables required by the template
+/// * Type mismatches during template evaluation
 trait ConditionEvaluator {
     fn eval_condition<T>(&self, context: &T, hb: &Handlebars<'static>) -> Result<bool>
     where
@@ -342,21 +328,11 @@ fn default_option_bool() -> Option<bool> {
     Some(false)
 }
 
-/// Provides default deployment phase value ("deploy").
-fn default_deploy_phase() -> Option<String> {
-    Some("config".to_string())
-}
-
 /// Provides default phase step value ("post").
 fn default_phase_hook() -> Option<String> {
     Some("post".to_string())
 }
-
-/// Provides default file operation value ("link").
-fn default_file_operation() -> Option<String> {
-    Some("link".to_string())
-}
-
+ 
 /// Provides default message display_when value ("deploy").
 fn default_on_command() -> Option<String> {
     Some("deploy".to_string())

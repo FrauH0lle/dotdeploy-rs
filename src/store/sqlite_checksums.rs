@@ -4,11 +4,13 @@
 //! files, which is crucial for tracking file changes and ensuring data integrity during the dotfile
 //! deployment process.
 
+use std::path::{Path, PathBuf};
+
 /// Represents a source file checksum record from the store database
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct StoreSourceFileChecksum {
     /// Path to the file
-    pub(crate) source: Option<String>,
+    pub(crate) source: Option<PathBuf>,
     /// Checksum of the file contents
     pub(crate) source_checksum: Option<String>,
 }
@@ -17,24 +19,24 @@ pub(crate) struct StoreSourceFileChecksum {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct StoreTargetFileChecksum {
     /// Path to the file
-    pub(crate) target: String,
+    pub(crate) target: PathBuf,
     /// Checksum of the file contents
     pub(crate) target_checksum: Option<String>,
 }
 
 impl StoreSourceFileChecksum {
-    pub(crate) fn new(source: Option<String>, source_checksum: Option<String>) -> Self {
+    pub(crate) fn new<P: AsRef<Path>>(source: Option<P>, source_checksum: Option<String>) -> Self {
         StoreSourceFileChecksum {
-            source,
+            source: source.map(|s| s.as_ref().to_path_buf()),
             source_checksum,
         }
     }
 }
 
 impl StoreTargetFileChecksum {
-    pub(crate) fn new(target: String, target_checksum: Option<String>) -> Self {
+    pub(crate) fn new<P: AsRef<Path>>(target: P, target_checksum: Option<String>) -> Self {
         StoreTargetFileChecksum {
-            target,
+            target: target.as_ref().to_path_buf(),
             target_checksum,
         }
     }
@@ -80,7 +82,7 @@ mod tests {
         // Source file and source checksum missing
         let store = store_setup_helper("create").await?;
         let result = store.get_source_checksum("/home/foo2.txt").await?;
-        assert_eq!(result, StoreSourceFileChecksum::new(None, None));
+        assert_eq!(result, StoreSourceFileChecksum::new::<PathBuf>(None, None));
 
         // All checksums
         let store = store_setup_helper("create").await?;

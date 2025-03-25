@@ -1,1 +1,118 @@
-/home/roland/Projekte/dotdeploy-rewrite/example_module_config.toml
+depends_on = ["test2", "test3"]
+
+# Files to deploy
+# 'target' must not be empty.
+# [[files]]
+# source = "vimrc"
+# target = "$HOME/.vimrc"
+# # Type of operation: "link" (default), "copy" or "create"
+# type = "link"
+
+[[files]]
+source = "bashrc"
+target = "$HOME/.bashrc"
+# Deploy only if 'if' evaluates to true
+if = "(eq DOD_DISTRIBUTION_NAME 'gentoo')"
+# If this file contains a handlebars template. Only for "copy" and "create" types
+template = true
+type = "copy"
+# File owner
+owner = "roland"
+# File group owner
+group = "users"
+# Permissions
+permissions = "740"
+
+[[files]]
+# Either source or target must be set.
+content = """
+Foo=123
+{{DOD_DISTRIBUTION_NAME}}
+"""
+# If this file contains a handlebars template. Only for "copy" and "create" types
+template = true
+target = "$HOME/.envrc"
+# Which deployment phase: "setup" or "config" (default)
+phase = "setup"
+type = "create"
+owner = "roland"
+group = "roland"
+permissions = "700"
+
+[[tasks]]
+shell = """
+echo "Running task 1 ..."
+echo "current module is $DOD_CURRENT_MODULE"
+# exit 127
+"""
+phase = "setup"
+hook = "pre"
+# if = "(or (and (eq distro 'ubuntu') (eq host 'workpc')) (eq distro 'gentoo'))"
+if = "(contains 'test3' DOD_MODULES)"
+
+[[tasks]]
+exec = "echo"
+# sudo = true
+args = ["Running task 2 ..."]
+phase = "setup"
+hook = "post"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["Running task 2 ..."]
+phase = "setup"
+hook = "post"
+if = "(eq DOD_DISTRIBUTION_NAME 'gentoo')"
+
+[[messages]]
+message = """
+Hello there :)
+"""
+
+[[messages]]
+message = "Hello there :) 2"
+if = "(eq DOD_DISTRIBUTION_NAME 'gentoo')"
+
+[[messages]]
+message = "Hello there :) from remove"
+on_command = "remove"
+
+# [[messages]]
+# message = "Hello there :) from update"
+# on_command = "update"
+
+[[messages]]
+message = "Hello there :) from update 2"
+on_command = "update"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["Running remove ..."]
+phase = "remove"
+hook = "pre"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["Running update task ..."]
+phase = "update"
+hook = "post"
+
+
+[[generators]]
+target = "$HOME/.bla.sh"
+source = "bla.sh"
+comment_start = "#"
+shebang = "#!/bin/sh"
+prepend = "Pretty cool"
+append = "And done"
+
+# [[packages]]
+# # install = ["cowsay"]
+# install = ["lolcat"]
+
+[context_vars]
+foo = "bar"
+mep = 42

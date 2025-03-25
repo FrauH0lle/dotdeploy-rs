@@ -3,17 +3,20 @@ use crate::logs::log_output;
 use crate::modules;
 use crate::utils::commands::exec_output;
 use crate::utils::sudo::PrivilegeManager;
-use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use color_eyre::{Report, Result};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::str::FromStr;
 use tracing::{info, warn};
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct PhaseTask {
     pub(crate) module_name: String,
-    pub(crate) shell: Option<String>,
-    pub(crate) exec: Option<String>,
-    pub(crate) args: Option<Vec<String>>,
+    pub(crate) shell: Option<OsString>,
+    pub(crate) exec: Option<OsString>,
+    pub(crate) args: Option<Vec<OsString>>,
+    pub(crate) expand_args: bool,
     pub(crate) sudo: bool,
     pub(crate) hook: PhaseHook,
 }
@@ -33,6 +36,7 @@ impl PhaseTask {
             let shell_display = format!(
                 "{}...",
                 shell
+                    .to_string_lossy()
                     .replace(['\n', '\r'], " ")
                     .chars()
                     .take(50)
@@ -40,10 +44,10 @@ impl PhaseTask {
             );
             info!("Executing `{}`", &shell_display);
 
-            let shell_args = ["-c", shell];
+            let shell_args = [&OsString::from_str("-c")?, shell];
             let output = temp_env::async_with_vars(
                 [("DOD_CURRENT_MODULE", Some(module_path))],
-                exec_output("sh", shell_args),
+                exec_output(&OsString::from_str("sh")?, shell_args),
             )
             .await?;
 
@@ -55,13 +59,38 @@ impl PhaseTask {
             } else {
                 Err(eyre!(
                     "Failed to execute {} from module {}",
-                    shell,
+                    shell.to_string_lossy(),
                     &self.module_name
                 ))
             }
         } else if let Some(ref exec) = self.exec {
-            let args = self.args.as_deref().unwrap_or(&[]);
-            let exec_display = format!("{} {}", exec, args.join(" "));
+            let original_args = self.args.as_deref().unwrap_or(&[]);
+            let args = if self.expand_args && !original_args.is_empty() {
+                temp_env::with_var("DOD_CURRENT_MODULE", Some(&module_path), || {
+                    original_args
+                        .iter()
+                        .map(|arg| {
+                            shellexpand::path::full(arg)
+                                .map(|s| s.into_owned().into_os_string())
+                                .map_err(|e| {
+                                    eyre!(
+                                        "Failed to expand argument '{}': {}",
+                                        arg.to_string_lossy(),
+                                        e
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<OsString>, Report>>()
+                })?
+            } else {
+                original_args.to_vec()
+            };
+            let args_display = args
+                .iter()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let exec_display = format!("{} {}", exec.to_string_lossy(), args_display);
 
             if self.sudo {
                 warn!("Executing `{}` with elevated permissions", exec_display);
@@ -72,15 +101,7 @@ impl PhaseTask {
             if self.sudo {
                 let output = temp_env::async_with_vars(
                     [("DOD_CURRENT_MODULE", Some(module_path))],
-                    pm.sudo_exec_output(
-                        exec,
-                        args,
-                        Some(&format!(
-                            "Executing {} with args: {}",
-                            exec,
-                            &self.args.as_ref().map(|a| a.join(" ")).unwrap_or_default()
-                        )),
-                    ),
+                    pm.sudo_exec_output(exec, &args, Some(&format!("Executing {}", exec_display,))),
                 )
                 .await?;
 
@@ -92,14 +113,14 @@ impl PhaseTask {
                 } else {
                     return Err(eyre!(
                         "Failed to execute {} from module {}",
-                        exec,
+                        exec_display,
                         &self.module_name
                     ));
                 }
             } else {
                 let output = temp_env::async_with_vars(
                     [("DOD_CURRENT_MODULE", Some(module_path))],
-                    exec_output(exec, args),
+                    exec_output(exec, &args),
                 )
                 .await?;
 

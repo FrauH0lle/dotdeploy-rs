@@ -1,6 +1,7 @@
 use tracing::debug;
 use crate::config::DotdeployConfig;
-use crate::modules::ConditionEvaluator;
+use crate::modules::{ConditionEvaluator, ConditionalComponent};
+use tracing::error;
 use crate::store::Stores;
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
@@ -15,13 +16,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use toml::Value;
+use crate::utils::common::{os_str_to_bytes, bytes_to_os_str};
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Generate {
+    /// The path of the target file.
+    pub(crate) target: PathBuf,
     /// The path of the source file.
-    pub(crate) target: String,
-    /// The name of the source file.
-    pub(crate) source: String,
+    pub(crate) source: PathBuf,
     /// Shebang, e.g. "#!/bin/sh" for POSIX shell scripts.
     pub(crate) shebang: Option<String>,
     /// Comment start string, e.g. "#" for Bash scripts.
@@ -46,6 +49,18 @@ impl ConditionEvaluator for Generate {
             // Just return true if there is no condition
             Ok(true)
         }
+    }
+}
+
+impl ConditionalComponent for Generate {
+    fn log_error(&self, module: &str, location: &Path, err: impl std::fmt::Display) {
+        error!(
+            module,
+            location = ?location,
+            target = self.target.display().to_string(),
+            "Generator condition evaluation failed: {}",
+            err
+        );
     }
 }
 
@@ -94,7 +109,9 @@ impl Generate {
 
         // Iterate through all modules and collect relevant content
         for module in modules.iter() {
-            let location: PathBuf = [&module.location, &self.source].iter().collect();
+            let mut location = PathBuf::from(bytes_to_os_str(&module.location_u8));
+            location.push(&self.source);
+
             context.insert(
                 "DOD_CURRENT_MODULE".to_string(),
                 Value::String(module.name.clone()),
@@ -131,10 +148,10 @@ impl Generate {
             let file_utils = FileUtils::new(pm);
             let parent = Path::new(&self.target)
                 .parent()
-                .ok_or_else(|| eyre!("Could not get parent of {}", &self.target))?;
+                .ok_or_else(|| eyre!("Could not get parent of {}", &self.target.display()))?;
             // Backup file
             if !stores.check_backup_exists(&self.target).await? {
-                debug!("Creating backup of {}", &self.target);
+                debug!("Creating backup of {}", &self.target.display());
                 if file_utils.check_file_exists(&self.target).await? {
                     stores.add_backup(&self.target).await?
                 } else {
@@ -149,7 +166,8 @@ impl Generate {
             stores
                 .add_module(&StoreModule {
                     name: "__dotdeploy_generated".to_string(),
-                    location: file_fs::path_to_string(&config.modules_root)?,
+                    location: config.modules_root.to_string_lossy().to_string(),
+                    location_u8: os_str_to_bytes(&config.modules_root),
                     user: Some(whoami::username()),
                     reason: "automatic".to_string(),
                     depends: None,
@@ -162,8 +180,10 @@ impl Generate {
                 .add_file(StoreFile {
                     module: "__dotdeploy_generated".to_string(),
                     source: None,
+                    source_u8: None,
                     source_checksum: None,
                     target: file_fs::path_to_string(&self.target)?,
+                    target_u8:os_str_to_bytes(&self.target),
                     target_checksum: None,
                     operation: "generate".to_string(),
                     user: Some(whoami::username()),

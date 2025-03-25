@@ -1,36 +1,35 @@
+use crate::modules::files::FileOperation;
 use crate::store::Stores;
 use crate::store::sqlite_files::StoreFile;
+use crate::store::sqlite_files::StoreFileBuilder;
 use crate::utils::FileUtils;
+use crate::utils::common::os_str_to_bytes;
 use crate::utils::file_fs;
 use crate::utils::file_metadata::FileMetadata;
 use crate::utils::file_permissions;
 use crate::utils::sudo::PrivilegeManager;
-use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::Result;
+use color_eyre::eyre::{WrapErr, eyre};
+use derive_builder::Builder;
 use handlebars::Handlebars;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use toml::Value;
 use tracing::{debug, info};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub(crate) enum PhaseFileOp {
-    Copy,
-    #[default]
-    Link,
-    Create,
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize, Builder)]
+#[builder(setter(prefix = "with"))]
 pub(crate) struct PhaseFile {
+    #[builder(setter(into))]
     pub(crate) module_name: String,
     pub(crate) source: Option<PathBuf>,
+    #[builder(setter(into))]
     pub(crate) target: PathBuf,
     pub(crate) content: Option<String>,
-    pub(crate) operation: PhaseFileOp,
+    pub(crate) operation: FileOperation,
     pub(crate) template: bool,
     pub(crate) owner: Option<String>,
     pub(crate) group: Option<String>,
@@ -47,15 +46,13 @@ impl PhaseFile {
     ) -> Result<()> {
         // Check if the previous operation is still valid
         let cur_operation = match self.operation {
-            PhaseFileOp::Copy => "copy",
-            PhaseFileOp::Link => "link",
-            PhaseFileOp::Create => "create",
+            FileOperation::Copy => "copy",
+            FileOperation::Link => "link",
+            FileOperation::Create => "create",
         };
-        // FIXME 2025-03-20: This should be handled better by get_file
-        let prev_operation = if stores.check_file_exists(&self.target).await? {
-            stores.get_file(&self.target).await?.operation
-        } else {
-            cur_operation.to_string()
+        let prev_operation = match stores.get_file(&self.target).await? {
+            Some(f) => f.operation,
+            None => cur_operation.to_string(),
         };
 
         if prev_operation.as_str() != cur_operation {
@@ -81,9 +78,9 @@ impl PhaseFile {
                 .await?;
         }
         match self.operation {
-            PhaseFileOp::Copy => self.copy(pm, &stores, &context, &hb).await?,
-            PhaseFileOp::Link => self.link(pm, &stores).await?,
-            PhaseFileOp::Create => self.create(pm, &stores, &context, &hb).await?,
+            FileOperation::Copy => self.copy(pm, &stores, &context, &hb).await?,
+            FileOperation::Link => self.link(pm, &stores).await?,
+            FileOperation::Create => self.create(pm, &stores, &context, &hb).await?,
         }
 
         Ok(())
@@ -192,16 +189,24 @@ impl PhaseFile {
             .await?;
 
         stores
-            .add_file(StoreFile::new(
-                self.module_name.clone(),
-                Some(file_fs::path_to_string(source_file)?),
-                Some(file_utils.calculate_sha256_checksum(&source_file).await?),
-                file_fs::path_to_string(&self.target)?,
-                Some(file_utils.calculate_sha256_checksum(&self.target).await?),
-                "copy".to_string(),
-                Some(whoami::username()),
-                chrono::offset::Utc::now(),
-            ))
+            .add_file(
+                StoreFileBuilder::default()
+                    .with_module(&self.module_name)
+                    .with_source(Some(source_file.to_string_lossy().to_string()))
+                    .with_source_u8(Some(os_str_to_bytes(source_file)))
+                    .with_source_checksum(Some(
+                        file_utils.calculate_sha256_checksum(&source_file).await?,
+                    ))
+                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target_u8(os_str_to_bytes(&self.target))
+                    .with_target_checksum(Some(
+                        file_utils.calculate_sha256_checksum(&self.target).await?,
+                    ))
+                    .with_operation("copy")
+                    .with_user(Some(whoami::username()))
+                    .with_date(chrono::offset::Utc::now())
+                    .build()?,
+            )
             .await?;
 
         Ok(())
@@ -274,16 +279,22 @@ impl PhaseFile {
             .await?;
 
         stores
-            .add_file(StoreFile::new(
-                self.module_name.clone(),
-                Some(file_fs::path_to_string(source_file)?),
-                Some(file_utils.calculate_sha256_checksum(&source_file).await?),
-                file_fs::path_to_string(&self.target)?,
-                None,
-                "link".to_string(),
-                Some(whoami::username()),
-                chrono::offset::Utc::now(),
-            ))
+            .add_file(
+                StoreFileBuilder::default()
+                    .with_module(&self.module_name)
+                    .with_source(Some(source_file.to_string_lossy().to_string()))
+                    .with_source_u8(Some(os_str_to_bytes(source_file)))
+                    .with_source_checksum(Some(
+                        file_utils.calculate_sha256_checksum(&source_file).await?,
+                    ))
+                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target_u8(os_str_to_bytes(&self.target))
+                    .with_target_checksum(None)
+                    .with_operation("link")
+                    .with_user(Some(whoami::username()))
+                    .with_date(chrono::offset::Utc::now())
+                    .build()?,
+            )
             .await?;
 
         Ok(())
@@ -366,16 +377,22 @@ impl PhaseFile {
             .await?;
 
         stores
-            .add_file(StoreFile::new(
-                self.module_name.clone(),
-                None,
-                None,
-                file_fs::path_to_string(&self.target)?,
-                Some(file_utils.calculate_sha256_checksum(&self.target).await?),
-                "create".to_string(),
-                Some(whoami::username()),
-                chrono::offset::Utc::now(),
-            ))
+            .add_file(
+                StoreFileBuilder::default()
+                    .with_module(&self.module_name)
+                    .with_source(None)
+                    .with_source_u8(None)
+                    .with_source_checksum(None)
+                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target_u8(os_str_to_bytes(&self.target))
+                    .with_target_checksum(Some(
+                        file_utils.calculate_sha256_checksum(&self.target).await?,
+                    ))
+                    .with_operation("create")
+                    .with_user(Some(whoami::username()))
+                    .with_date(chrono::offset::Utc::now())
+                    .build()?,
+            )
             .await?;
 
         Ok(())

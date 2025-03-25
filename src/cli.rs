@@ -55,6 +55,10 @@ pub(crate) struct Cli {
     #[clap(long, action, env = "DOD_USE_SUDO")]
     pub(crate) use_sudo: Option<bool>,
 
+    /// Command used for privilege elevation
+    #[clap(long, action, env = "DOD_SUDO_CMD")]
+    pub(crate) sudo_cmd: Option<String>,
+
     /// Deploy files to directories other than the user's HOME
     #[clap(long, action, env = "DOD_DEPLOY_SYS_FILES")]
     pub(crate) deploy_sys_files: Option<bool>,
@@ -116,11 +120,10 @@ pub(crate) enum Commands {
         modules: Option<Vec<String>>,
     },
 
-    /// Update module content and optionally installed packages
+    /// Update module content
     Update {
-        /// Also update installed packages
-        #[clap(long, short)]
-        packages: bool,
+        /// Optional list of module names to update
+        modules: Option<Vec<String>>,
     },
 
     /// Synchronize deployed files with their sources
@@ -139,6 +142,12 @@ pub(crate) enum Commands {
         /// Enter interactive fix mode for discrepancies
         #[clap(long)]
         fix: bool,
+    },
+
+    /// Lookup source file
+    Lookup {
+        /// File path to lookup
+        file: PathBuf,
     },
 
     /// Complete uninstall of dotdeploy configuration

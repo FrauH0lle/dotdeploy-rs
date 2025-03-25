@@ -1,8 +1,11 @@
-use crate::modules::{default_on_command, ConditionEvaluator};
+use crate::modules::{default_on_command, ConditionEvaluator, ConditionalComponent};
+use std::path::Path;
+use tracing::error;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ModuleMessage {
     /// The content of the message to be displayed.
     pub(crate) message: String,
@@ -33,7 +36,20 @@ impl ConditionEvaluator for ModuleMessage {
     }
 }
 
+impl ConditionalComponent for ModuleMessage {
+    fn log_error(&self, module: &str, location: &Path, err: impl std::fmt::Display) {
+        error!(
+            module,
+            location = ?location,
+            message = self.message,
+            "Message condition evaluation failed: {}",
+            err
+        );
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommandMessage {
     pub(crate) module_name: String,
     /// The content of the message to be displayed.

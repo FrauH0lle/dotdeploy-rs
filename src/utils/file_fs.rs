@@ -10,9 +10,11 @@ use crate::utils::common;
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{instrument, warn};
+use tracing::warn;
 
 /// Converts a path to a string, handling potential Unicode conversion errors.
 ///
@@ -89,7 +91,7 @@ pub(crate) fn expand_path_string(
     Ok(expanded.to_string())
 }
 
-/// Expands a path string, resolving environment variables and tilde expressions.
+/// Expands a path, resolving environment variables and tilde expressions.
 ///
 /// This function takes a path and expands any environment variables (e.g., $HOME) and tilde
 /// expressions (~) within it.
@@ -102,15 +104,28 @@ pub(crate) fn expand_path_string(
 ///
 /// # Errors
 ///
-/// Returns an error if path contains invalid Unicode or environment variables cannot be expanded.
-pub(crate) fn expand_path<P: AsRef<Path>>(
+/// Returns an error if environment variables cannot be expanded.
+pub(crate) fn expand_path<P: AsRef<Path>, S: AsRef<OsStr>>(
     path: P,
-    env: Option<&HashMap<String, String>>,
+    env: Option<&HashMap<String, S>>,
 ) -> Result<PathBuf> {
-    // Convert path to string, handling Unicode conversion
-    let path_str = path_to_string(path)?;
-    // Expand path string
-    let expanded = expand_path_string(&path_str, env)?;
+    let home_dir = || -> Option<PathBuf> { dirs::home_dir() };
+
+    // Create variable lookup closure that checks custom env first, then system env
+    let context = |var: &str| -> Result<Option<OsString>> {
+        // Check custom environment variables first
+        if let Some(custom_env) = env {
+            if let Some(value) = custom_env.get(var) {
+                return Ok(Some(value.as_ref().into()));
+            }
+        }
+        // Fall back to system environment variables
+        Ok(std::env::var_os(var))
+    };
+
+    // Expand the path using shellexpand with custom context
+    let expanded = shellexpand::path::full_with_context(&path, home_dir, context)
+        .map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
 
     Ok(PathBuf::from(expanded))
 }
@@ -357,7 +372,6 @@ impl FileUtils {
     /// # Errors
     ///
     /// Returns an error if an error occurs during the deletion.
-    #[instrument(skip(path))]
     pub(crate) async fn delete_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         match fs::remove_file(&path).await {
             Ok(_) => Ok(()),
@@ -428,8 +442,8 @@ impl FileUtils {
             if no_ask
                 || common::ask_boolean(&format!(
                     "{}\n{}",
-                    format!("Directory {} is now empty. Delete [y/N]?", path.display()),
-                    "(You can skip this prompt with the CLI argument '-y true' or '--noconfirm=true')",
+                    format_args!("Directory {} is now empty. Delete [y/N]?", path.display()),
+                    "(You can skip this prompt with the CLI argument '-y true' or '--noconfirm=true')"
                 ))
             {
                 match fs::remove_dir(path).await {
@@ -515,7 +529,7 @@ mod tests {
         // Test with tilde expansion
         let home = dirs::home_dir().ok_or_eyre("Failed to get HOME dir")?;
         assert_eq!(
-            expand_path("~/test.txt", None)?,
+            expand_path::<&str, &str>("~/test.txt", None)?,
             PathBuf::from(format!("{}/test.txt", path_to_string(home)?))
         );
 
@@ -538,14 +552,14 @@ mod tests {
 
         // Test with absolute path (no expansion needed)
         assert_eq!(
-            expand_path("/absolute/path.txt", None)?,
+            expand_path::<&str, &str>("/absolute/path.txt", None)?,
             PathBuf::from("/absolute/path.txt")
         );
 
         // Test with invalid UTF-8
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
-        assert!(expand_path(PathBuf::from(OsString::from_vec(vec![255])), None).is_err());
+        assert!(expand_path::<PathBuf, &str>(PathBuf::from(OsString::from_vec(vec![255])), None).is_err());
 
         Ok(())
     }

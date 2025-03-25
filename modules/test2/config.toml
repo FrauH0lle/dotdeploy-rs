@@ -11,3 +11,16 @@ sudo = false
 args = ["arg1", "arg2"]
 phase = "config"
 hook = "post"
+
+[[tasks]]
+exec = "echo"
+sudo = false
+args = ["$DOD_CURRENT_MODULE", "arg2"]
+expand_args = true
+phase = "config"
+hook = "post"
+
+
+[[messages]]
+message = "Hello from module test2 -> Updating"
+on_command = "update"

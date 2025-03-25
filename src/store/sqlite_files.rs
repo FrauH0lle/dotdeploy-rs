@@ -3,49 +3,36 @@
 //! It includes operations for adding, removing, retrieving, and checking the existence of file
 //! records.
 
+use derive_builder::Builder;
+
 /// Representation of a store file entry (row) in the database.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Builder)]
+#[builder(setter(prefix = "with"))]
 pub(crate) struct StoreFile {
     /// The module associated with this file
+    #[builder(setter(into))]
     pub(crate) module: String,
     /// The source path of the file (optional)
     pub(crate) source: Option<String>,
+    /// The source path of the file (optional, byte vector)
+    pub(crate) source_u8: Option<Vec<u8>>,
     /// The checksum of the source file (optional)
     pub(crate) source_checksum: Option<String>,
     /// The destination path of the file
+    #[builder(setter(into))]
     pub(crate) target: String,
+    /// The destination path of the file (byte vector)
+    #[builder(setter(into))]
+    pub(crate) target_u8: Vec<u8>,
     /// The checksum of the destination file (optional)
     pub(crate) target_checksum: Option<String>,
     /// The operation performed on the file (must be either 'link', 'copy', or 'create')
+    #[builder(setter(into))]
     pub(crate) operation: String,
     /// The user associated with this file operation (optional)
     pub(crate) user: Option<String>,
     /// The date and time when the file entry was added or last updated
     pub(crate) date: chrono::DateTime<chrono::Utc>,
-}
-
-impl StoreFile {
-    pub(crate) fn new(
-        module: String,
-        source: Option<String>,
-        source_checksum: Option<String>,
-        target: String,
-        target_checksum: Option<String>,
-        operation: String,
-        user: Option<String>,
-        date: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
-        StoreFile {
-            module,
-            source,
-            source_checksum,
-            target,
-            target_checksum,
-            operation,
-            user,
-            date,
-        }
-    }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -59,10 +46,11 @@ mod tests {
     use crate::store::Store;
     use crate::store::sqlite::init_sqlite_store;
     use crate::store::sqlite::tests::store_setup_helper;
-    use crate::store::sqlite_modules::StoreModule;
+    use crate::store::sqlite_modules::StoreModuleBuilder;
     use crate::tests;
+    use crate::utils::common::os_str_to_bytes;
     use color_eyre::Result;
-    use std::env;
+    use std::{ffi::OsString, str::FromStr};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -78,35 +66,39 @@ mod tests {
         let user_store = init_sqlite_store(&config, false, pm).await?;
 
         // Insert a module
-        let test_module = StoreModule::new(
-            "test".to_string(),
-            "/testpath".to_string(),
-            Some("user".to_string()),
-            "manual".to_string(),
-            None,
-            chrono::offset::Utc::now(),
-        );
+        let test_module = StoreModuleBuilder::default()
+            .with_name("test")
+            .with_location("/testpath")
+            .with_user(Some("user".to_string()))
+            .with_reason("manual")
+            .with_depends(None)
+            .with_date(chrono::offset::Utc::now())
+            .build()?;
 
         user_store.add_module(&test_module).await?;
 
         // Test input
         let local_time = chrono::offset::Utc::now();
-        let test_file = StoreFile::new(
-            "test".to_string(),
-            Some("/dotfiles/foo.txt".to_string()),
-            Some("abc123".to_string()),
-            "/home/foo.txt".to_string(),
-            Some("abc123".to_string()),
-            "link".to_string(),
-            Some(env::var("USER")?),
-            local_time,
-        );
+        let test_file = StoreFileBuilder::default()
+            .with_module("test")
+            .with_source(Some("/dotfiles/foo.txt".to_string()))
+            .with_source_u8(Some(os_str_to_bytes(OsString::from_str(
+                "/dotfiles/foo.txt",
+            )?)))
+            .with_source_checksum(Some("abc123".to_string()))
+            .with_target("/home/foo.txt")
+            .with_target_u8(os_str_to_bytes(OsString::from_str("/home/foo.txt")?))
+            .with_target_checksum(Some("abc123".to_string()))
+            .with_operation("link")
+            .with_user(Some(whoami::username()))
+            .with_date(local_time)
+            .build()?;
 
         user_store.add_file(test_file.clone()).await?;
 
         let result = user_store.get_file("/home/foo.txt").await?;
 
-        assert_eq!(test_file, result);
+        assert_eq!(Some(test_file), result);
 
         // Missing file
         let e = user_store.get_file("/doesNotExist.txt").await;

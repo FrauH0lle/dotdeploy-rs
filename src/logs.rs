@@ -6,10 +6,11 @@
 use chrono::Local;
 use color_eyre::eyre::OptionExt;
 use color_eyre::{Result, eyre::WrapErr};
-use std::path::{Path, PathBuf};
+use derive_builder::Builder;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::{fs, io};
-use tracing::{Level, debug, instrument};
+use tracing::{Level, debug};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::filter::FilterFn;
@@ -21,20 +22,57 @@ use tracing_subscriber::{EnvFilter, fmt};
 // -------------------------------------------------------------------------------------------------
 
 /// Central logging facility for dotdeploy that manages both terminal and file output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
+#[builder(setter(prefix = "with"))]
 pub(crate) struct Logger {
     /// Synchronization for terminal output.
     ///
     /// This ensures that sudo password prompts and similar terminal interactions don't overlap and
     /// confuse the user, especially in concurrent operations.
+    #[builder(setter(skip), default = "Arc::new(RwLock::new(()))")]
     pub(crate) terminal_lock: Arc<RwLock<()>>,
     /// Logging level
+    #[builder(setter(custom))]
     pub(crate) verbosity: Level,
     /// Maximum number of log files to retain
+    #[builder(default = "DEFAULT_MAX_LOGS")]
     pub(crate) max_logs: usize,
     /// Directory where log files are stored
+    #[builder(default = "self.default_log_dir()?", setter(into))]
     pub(crate) log_dir: PathBuf,
 }
+
+// --
+// * LoggerBuilder
+
+/// Default maximum number of log files to retain
+pub(crate) const DEFAULT_MAX_LOGS: usize = 15;
+
+impl LoggerBuilder {
+    /// Sets the verbosity level for logging.
+    ///
+    /// # Arguments
+    /// * `verbosity` - Verbosity level (0 = INFO, 1 = DEBUG, 2+ = TRACE)
+    pub(crate) fn with_verbosity(&mut self, verbosity: u8) -> &mut Self {
+        let new = self;
+        new.verbosity = Some(match verbosity {
+            0 => Level::INFO,
+            1 => Level::DEBUG,
+            _ => Level::TRACE,
+        });
+        new
+    }
+
+    fn default_log_dir(&self) -> Result<PathBuf, String> {
+        match get_default_log_dir() {
+            Ok(dir) => Ok(dir),
+            Err(e) => Err(format!("{:?}", e)),
+        }
+    }
+}
+
+// --
+// * Logger
 
 impl Logger {
     /// Initialize the logging system with both terminal and file output.
@@ -47,7 +85,6 @@ impl Logger {
     ///
     /// # Errors
     /// Returns an error if something in the [`Logger`] initialization fails.
-    #[instrument]
     pub(crate) fn start(&self) -> Result<WorkerGuard> {
         let level = self.verbosity;
 
@@ -140,7 +177,6 @@ impl Logger {
     /// Returns an error if:
     /// * Log directory cannot be read
     /// * Old log files cannot be removed
-    #[instrument]
     fn rotate_logs(&self) -> Result<()> {
         debug!("Starting log rotation");
         // Get all log files
@@ -177,94 +213,13 @@ impl Logger {
 }
 
 // -------------------------------------------------------------------------------------------------
-// LoggerBuilder
+// Helpers
 // -------------------------------------------------------------------------------------------------
-
-/// Default maximum number of log files to retain
-pub(crate) const DEFAULT_MAX_LOGS: usize = 15;
-
-/// Builder for configuring and creating a [`Logger`] instance.
-///
-/// Provides a fluent interface for configuring:
-/// * Verbosity level
-/// * Log retention policy
-/// * Log storage location
-///
-/// * `verbosity` - Controls detail level (0=Info, 1=Debug, 2+=Trace)
-/// * `max_logs` - Maximum historical logs to retain (default: 15)
-/// * `log_dir` - Storage location for log files
-#[derive(Debug, Default)]
-pub(crate) struct LoggerBuilder {
-    /// The logging verbosity level (INFO, DEBUG, or TRACE)
-    verbosity: Option<Level>,
-    /// Maximum number of log files to keep during rotation
-    max_logs: Option<usize>,
-    /// Directory where log files will be stored
-    log_dir: Option<PathBuf>,
-}
-
-impl LoggerBuilder {
-    /// Creates a new LoggerBuilder with default settings.
-    pub(crate) fn new() -> Self {
-        LoggerBuilder::default()
-    }
-
-    /// Sets the verbosity level for logging.
-    ///
-    /// # Arguments
-    /// * `verbosity` - Verbosity level (0 = INFO, 1 = DEBUG, 2+ = TRACE)
-    pub(crate) fn with_verbosity(&mut self, verbosity: u8) -> &mut Self {
-        let new = self;
-        new.verbosity = Some(match verbosity {
-            0 => Level::INFO,
-            1 => Level::DEBUG,
-            _ => Level::TRACE,
-        });
-        new
-    }
-
-    /// Sets the maximum number of log files to retain during rotation.
-    ///
-    /// # Arguments
-    /// * `count` - Maximum number of log files to keep
-    pub(crate) fn with_max_logs(&mut self, count: usize) -> &mut Self {
-        let new = self;
-        new.max_logs = Some(count);
-        new
-    }
-
-    /// Sets the directory where log files will be stored.
-    ///
-    /// # Arguments
-    /// * `dir` - Path to the directory for storing log files
-    pub(crate) fn with_log_dir(&mut self, dir: &Path) -> &mut Self {
-        let new = self;
-        new.log_dir = Some(dir.into());
-        new
-    }
-
-    /// Builds and returns a new [`Logger`] instance with the configured settings.
-    ///
-    /// # Errors
-    /// Returns an error if required settings are missing or if log directory creation fails.
-    pub(crate) fn build(&self) -> Result<Logger> {
-        Ok(Logger {
-            terminal_lock: Arc::new(RwLock::new(())),
-            verbosity: self.verbosity.ok_or_eyre("Verbosity level undefined")?,
-            max_logs: self.max_logs.unwrap_or(DEFAULT_MAX_LOGS),
-            log_dir: match self.log_dir {
-                Some(ref value) => Clone::clone(value),
-                None => get_default_log_dir()?,
-            },
-        })
-    }
-}
 
 /// Get the directory where log files should be stored.
 ///
 /// Uses XDG_DATA_HOME/dotdeploy/logs if available, otherwise defaults to
 /// ~/.local/share/dotdeploy/logs
-#[instrument]
 pub(crate) fn get_default_log_dir() -> Result<PathBuf> {
     let log_dir = dirs::data_dir()
         .ok_or_eyre("Failed to determine user's local data dir")?
@@ -312,7 +267,6 @@ macro_rules! log_output {
 }
 pub(crate) use log_output;
 
-
 // -------------------------------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------------------------------
@@ -343,7 +297,7 @@ mod tests {
             File::create(&log_file)?;
         }
 
-        let logger = LoggerBuilder::new()
+        let logger = LoggerBuilder::default()
             .with_verbosity(1)
             .with_log_dir(temp_dir.path())
             .build()?;

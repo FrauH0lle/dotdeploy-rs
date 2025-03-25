@@ -8,3 +8,8 @@ Hello there from test3
 source = "dot-foo-dir/*"
 target = "$HOME/dot-foo-dir/*"
 type = "link"
+
+# [[files]]
+# source = "dot-foo-dir/dot-foo-dir1.txt"
+# target = "/dot-foo-dir/dot-foo-dir1.txt"
+# type = "link"

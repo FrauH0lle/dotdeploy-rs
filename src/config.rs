@@ -63,6 +63,7 @@ use std::path::{Path, PathBuf};
 /// deploy_sys_files = false
 /// ```
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DotdeployConfig {
     /// Show what would happen without making changes.
     pub(crate) dry_run: bool,
@@ -71,6 +72,7 @@ pub(crate) struct DotdeployConfig {
     /// Assume "yes" instead of prompting
     pub(crate) noconfirm: bool,
     /// Root folder of config.
+    #[allow(dead_code)]
     pub(crate) config_root: PathBuf,
     /// Root folder of dotfiles.
     pub(crate) dotfiles_root: PathBuf,
@@ -109,6 +111,7 @@ pub(crate) struct DotdeployConfig {
 // -------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DotdeployConfigBuilder {
     pub(crate) dry_run: Option<bool>,
     pub(crate) force: Option<bool>,
@@ -132,10 +135,6 @@ pub(crate) struct DotdeployConfigBuilder {
 }
 
 impl DotdeployConfigBuilder {
-    pub(crate) fn new() -> Self {
-        DotdeployConfigBuilder::default()
-    }
-
     // --
     // * Builders
 
@@ -220,7 +219,10 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    pub(crate) fn with_remove_pkg_cmd(&mut self, remove_pkg_cmd: Option<Vec<OsString>>) -> &mut Self {
+    pub(crate) fn with_remove_pkg_cmd(
+        &mut self,
+        remove_pkg_cmd: Option<Vec<OsString>>,
+    ) -> &mut Self {
         let new = self;
         new.remove_pkg_cmd = remove_pkg_cmd;
         new
@@ -287,13 +289,22 @@ impl DotdeployConfigBuilder {
         F: FnOnce() -> Result<PathBuf>,
     {
         match value {
-            Some(path) => crate::utils::file_fs::expand_path(path, None),
+            Some(path) => crate::utils::file_fs::expand_path::<&PathBuf, &str>(path, None),
             None => parsed_value
                 .as_ref()
-                .map_or_else(default_fn, |p| crate::utils::file_fs::expand_path(p, None)),
+                .map_or_else(default_fn, |p| crate::utils::file_fs::expand_path::<&PathBuf, &str>(p, None)),
         }
     }
 
+    /// Constructs the final configuration by merging defaults, file values, and runtime overrides
+    ///
+    /// Resolution order (highest priority last):
+    /// 1. Default values
+    /// 2. Config file values
+    /// 3. Explicit builder overrides
+    ///
+    /// Expands all paths and handles environment variables. Automatically detects hostname and
+    /// distribution if not explicitly set.
     pub(crate) fn build(&self, verbosity: u8) -> Result<DotdeployConfig> {
         // Determine the config file path based on environment variables
         let config_file_path = if let Some(ref path) = self.config_root {
@@ -323,22 +334,22 @@ impl DotdeployConfigBuilder {
 
         let dotfiles_root =
             Self::expand_config_path(&self.dotfiles_root, &parsed_data.dotfiles_root, || {
-                crate::utils::file_fs::expand_path(DEFAULT_DOTFILES_DIR, None)
+                crate::utils::file_fs::expand_path::<&str, &str>(DEFAULT_DOTFILES_DIR, None)
             })?;
 
         let modules_root =
             Self::expand_config_path(&self.modules_root, &parsed_data.modules_root, || {
-                crate::utils::file_fs::expand_path(dotfiles_root.join(DEFAULT_MODULES_DIR), None)
+                crate::utils::file_fs::expand_path::<PathBuf, &str>(dotfiles_root.join(DEFAULT_MODULES_DIR), None)
             })?;
 
         let hosts_root =
             Self::expand_config_path(&self.hosts_root, &parsed_data.hosts_root, || {
-                crate::utils::file_fs::expand_path(dotfiles_root.join(DEFAULT_HOSTS_DIR), None)
+                crate::utils::file_fs::expand_path::<PathBuf, &str>(dotfiles_root.join(DEFAULT_HOSTS_DIR), None)
             })?;
 
         let user_store_path =
             Self::expand_config_path(&self.user_store_path, &parsed_data.user_store_path, || {
-                crate::utils::file_fs::expand_path(
+                crate::utils::file_fs::expand_path::<PathBuf, &str>(
                     dirs::data_dir()
                         .ok_or_eyre("Could not determine user's data directory")?
                         .join("dotdeploy"),
@@ -349,7 +360,7 @@ impl DotdeployConfigBuilder {
         let system_store_path = Self::expand_config_path(
             &self.system_store_path,
             &parsed_data.system_store_path,
-            || crate::utils::file_fs::expand_path(DEFAULT_SYSTEM_STORE, None),
+            || crate::utils::file_fs::expand_path::<&str, &str>(DEFAULT_SYSTEM_STORE, None),
         )?;
 
         Ok(DotdeployConfig {
@@ -506,7 +517,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
 
         temp_env::with_var("HOME", Some(temp_dir.path()), || -> Result<()> {
-            let test_config = DotdeployConfigBuilder::new()
+            let test_config = DotdeployConfigBuilder::default()
                 .with_config_root(Some(PathBuf::from(temp_dir.path())))
                 .build(0)?;
 
@@ -554,7 +565,7 @@ mod tests {
             hosts_root: None,
         };
         create_config_file(&temp_dir, &test_config_content)?;
-        let test_config = DotdeployConfigBuilder::new()
+        let test_config = DotdeployConfigBuilder::default()
             .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
             .build(0)?;
 
@@ -589,7 +600,7 @@ mod tests {
 
         create_config_file(&temp_dir, &test_config_content)?;
 
-        let test_config = DotdeployConfigBuilder::new()
+        let test_config = DotdeployConfigBuilder::default()
             .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
             .build(0)?;
 

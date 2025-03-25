@@ -3,9 +3,8 @@
 //! Provided functionality include the creation of checksums for files, backing them up, storing
 //! their source and target as well as their associated module.
 
-use crate::modules::tasks::ModuleTask;
-use crate::modules::messages::CommandMessage;
 use crate::config::DotdeployConfig;
+use crate::modules::messages::CommandMessage;
 use crate::phases::DeployPhaseStruct;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
@@ -19,7 +18,7 @@ use sqlite::SQLiteStore;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, instrument};
+use tracing::debug;
 
 pub(crate) mod sqlite;
 pub(crate) mod sqlite_backups;
@@ -65,23 +64,37 @@ impl Stores {
         })
     }
 
+    /// Determines the appropriate store (user or system) for a given file path.
+    ///
+    /// Selects the store based on the file's location:
+    /// - User store: Files within the user's home directory
+    /// - System store: Files outside home directory (requires system store configuration)
+    ///
+    /// # Arguments
+    /// * `file_path` - Path to the file being operated on. Implements `AsRef<Path>`
+    ///                 for flexible input types.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Home directory cannot be determined (user store check)
+    /// - System store is requested but not configured (check `deploy_sys_files` config)
     fn match_store<P: AsRef<Path>>(&self, file_path: P) -> Result<&SQLiteStore> {
-        if file_path
-            .as_ref()
-            .starts_with(dirs::home_dir().ok_or_eyre("Failed to get HOME directory")?)
-        {
+        // Convert input to Path reference for comparison
+        let path = file_path.as_ref();
+        
+        // Check if path is within user's home directory
+        let home_dir = dirs::home_dir()
+            .ok_or_eyre("Failed to determine user's home directory")
+            .suggestion("Verify $HOME environment variable is set")?;
+
+        if path.starts_with(&home_dir) {
+            // User store for home directory files
             Ok(&self.user_store)
         } else {
-            match self.system_store {
-                Some(ref store) => Ok(store),
-                None => {
-                    Err(
-                        eyre!("System store requested but was found empty").suggestion(
-                            "Check the value of 'deploy_sys_files' in the dotdeploy config",
-                        ),
-                    )
-                }
-            }
+            // System store for paths outside home directory
+            self.system_store.as_ref().ok_or_eyre(
+                "Attempted system store access but system deployments are disabled"
+            ).suggestion("Enable 'deploy_sys_files' in configuration to use system store")
         }
     }
 
@@ -132,7 +145,7 @@ impl Stores {
     // --
     // * File operations
 
-    pub(crate) async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<StoreFile> {
+    pub(crate) async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<Option<StoreFile>> {
         let store = self.match_store(&filename)?;
         store.get_file(&filename).await
     }
@@ -320,13 +333,15 @@ pub(crate) trait Store {
 
     /// Retrieves a single module from the store by its name.
     ///
+    /// If no module is found, `None` is returned.
+    /// 
     /// # Arguments
     /// * `name` - The name of the module to retrieve.
     ///
     /// # Errors
     /// Returns an error if there's an error during the database operation or if the module is not
     /// found.
-    async fn get_module<S: AsRef<str>>(&self, name: S) -> Result<StoreModule>;
+    async fn get_module<S: AsRef<str>>(&self, name: S) -> Result<Option<StoreModule>>;
 
     /// Retrieves all modules from the store.
     async fn get_all_modules(&self) -> Result<Vec<StoreModule>>;
@@ -342,7 +357,7 @@ pub(crate) trait Store {
     /// # Errors
     /// Returns an error if there's an error during the database operation or if the file is not
     /// found.
-    async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<StoreFile>;
+    async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<Option<StoreFile>>;
 
     /// Adds or updates a single file entry in the database.
     ///
@@ -498,33 +513,20 @@ pub(crate) trait Store {
 
     // FIXME 2025-03-22: All of this is pretty redundant and can probably be implemented similar to
     //   https://users.rust-lang.org/t/limit-a-generic-type-to-be-either-a-or-b/66367/7
-    // async fn add_removal_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()>;
+    async fn cache_command<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()>;
 
-    // async fn get_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>>;
-    async fn cache_phase<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()>;
+    async fn get_cached_commands<S: AsRef<str>>(&self, phase: S) -> Result<Option<DeployPhaseStruct>>;
 
-    async fn get_all_cached_tasks<S: AsRef<str>>(&self, phase: S) -> Option<DeployPhaseStruct>;
+    async fn cache_message<S: AsRef<str>>(&self, command: S, message: CommandMessage)
+    -> Result<()>;
 
-    // async fn remove_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<()>;
-
-    async fn cache_message<S: AsRef<str>>(&self, command: S, message: CommandMessage) -> Result<()>;
-
-    async fn get_all_cached_messages<S: AsRef<str>>(&self, module: S, command: S) -> Result<Vec<CommandMessage>>;
+    async fn get_all_cached_messages<S: AsRef<str>>(
+        &self,
+        module: S,
+        command: S,
+    ) -> Result<Vec<CommandMessage>>;
 
     async fn remove_all_cached_messages<S: AsRef<str>>(&self, module: S, command: S) -> Result<()>;
-
-    // async fn add_update_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()>;
-
-    // async fn get_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>>;
-
-    // async fn remove_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<()>;
-
-    // async fn add_update_message<S: AsRef<str>>(&self, message: CommandMessage) -> Result<()>;
-
-    // async fn get_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<Vec<CommandMessage>>;
-
-    // async fn remove_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<()>;
-
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -542,7 +544,6 @@ pub(crate) trait Store {
 /// # Returns
 /// * `Ok(())` - Directory created successfully or already exists
 /// * `Err` - If directory creation or permission setting fails
-#[instrument(skip(file_path))]
 async fn create_system_dir<P: AsRef<Path>>(file_path: P, pm: Arc<PrivilegeManager>) -> Result<()> {
     let file_utils = FileUtils::new(Arc::clone(&pm));
     match file_utils.check_file_exists(file_path.as_ref()).await {
@@ -581,7 +582,7 @@ async fn create_system_dir<P: AsRef<Path>>(file_path: P, pm: Arc<PrivilegeManage
             );
             Ok(())
         }
-        Err(e) => return Err(eyre!("{}", e)),
+        Err(e) => Err(eyre!("{}", e)),
     }
 }
 
@@ -596,7 +597,6 @@ async fn create_system_dir<P: AsRef<Path>>(file_path: P, pm: Arc<PrivilegeManage
 /// # Returns
 /// * `Ok(())` - Directory created successfully or already exists
 /// * `Err` - If directory creation fails
-#[instrument(skip(file_path))]
 async fn create_user_dir<P: AsRef<Path>>(file_path: P, pm: Arc<PrivilegeManager>) -> Result<()> {
     let file_utils = FileUtils::new(pm);
     match file_path.as_ref().try_exists() {
@@ -618,7 +618,7 @@ async fn create_user_dir<P: AsRef<Path>>(file_path: P, pm: Arc<PrivilegeManager>
             );
             Ok(())
         }
-        Err(e) => return Err(eyre!("{}", e)),
+        Err(e) => Err(eyre!("{}", e)),
     }
 }
 

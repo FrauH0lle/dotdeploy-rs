@@ -5,6 +5,7 @@
 //! user via the command line.
 
 use std::io::{stdin, stdout, Write};
+use std::ffi::{OsStr, OsString};
 
 /// Asks the user for a yes/no confirmation.
 ///
@@ -55,3 +56,35 @@ pub(crate) fn ask_boolean(prompt: &str) -> bool {
     // Note: An empty input (just pressing Enter) defaults to 'no'
     buf.to_lowercase().starts_with('y')
 }
+
+// From https://users.rust-lang.org/t/how-to-safely-store-a-path-osstring-in-a-sqllite-database/79712/10
+#[cfg(unix)]
+pub fn os_str_to_bytes<S: AsRef<OsStr>>(string: S) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    string.as_ref().as_bytes().to_vec()
+}
+
+#[cfg(unix)]
+pub fn bytes_to_os_str<B: AsRef<[u8]>>(bytes: B) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.as_ref().to_vec())
+}
+
+// NOTE 2025-03-27: I'll leave this here just in case I ever want to support Windows.
+// #[cfg(windows)]
+// pub fn os_str_to_bytes(string: &OsStr) -> Cow<'_, [u8]> {
+//     use std::os::windows::ffi::OsStrExt;
+//     let bytes = string.encode_wide().flat_map(u16::to_le_bytes).collect();
+//     Cow::Owned(bytes)
+// }
+
+// #[cfg(windows)]
+// pub fn bytes_to_os_str(bytes: &[u8]) -> OsString {
+//     use std::os::windows::ffi::OsStringExt;
+//     let wide: Vec<u16> = bytes
+//         .chunks_exact(2)
+//         .into_iter()
+//         .map(|a| u16::from_le_bytes([a[0], a[1]]))
+//         .collect();
+//     OsString::from_wide(wide.as_slice())
+// }

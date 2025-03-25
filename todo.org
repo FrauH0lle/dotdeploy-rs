@@ -1,0 +1,54 @@
+#+title: Todo
+
+* TODO Code review
+- [X] cli.rs
+- [ ] cmds.rs
+- [ ] cmds/common.rs
+- [ ] cmds/deploy.rs
+- [ ] cmds/remove.rs
+- [ ] cmds/update.rs
+- [X] config.rs
+- [ ] errors.rs
+- [X] handlebars_helper.rs
+- [X] logs.rs
+- [ ] main.rs
+- [ ] modules.rs
+- [ ] modules/files.rs
+- [ ] modules/generate_file.rs
+- [ ] modules/messages.rs
+- [ ] modules/packages.rs
+- [ ] modules/queue.rs
+- [ ] modules/tasks.rs
+- [ ] phases.rs
+- [ ] phases/file.rs
+- [ ] phases/task.rs
+- [ ] store.rs
+- [ ] store/sqlite_backups.rs
+- [ ] store/sqlite_checksums.rs
+- [ ] store/sqlite_files.rs
+- [ ] store/sqlite_modules.rs
+- [ ] store/sqlite.rs
+- [ ] tests.rs
+- [ ] utils.rs
+- [ ] utils/commands.rs
+- [ ] utils/common.rs
+- [ ] utils/file_checksum.rs
+- [ ] utils/file_fs.rs
+- [ ] utils/file_metadata.rs
+- [ ] utils/file_permissions.rs
+- [ ] utils/sudo.rs
+
+  AI: Perform a code review for the function below.
+  - Ensure that the conventions are met.
+  - Ensure that a docstring and rich explanatory code comments are present and
+    up to date.
+  - Check if the input arguments need to be owned or can be borrowed and that
+    their naming is consistent with other functions.
+  - Ensure the code is idiomatic and follows best practices for Rust
+    edition 2024.
+  - Verifiy that errors and edge cases are handled.
+  - Review the code in the context of the whole codebase and make changes as
+    necessary.
+
+* TODO Use derive_builder for ALL THE BUILDER PATTERNS!
+- Replace all ~..::new()~ methods with a builder

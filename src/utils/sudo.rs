@@ -318,7 +318,7 @@ impl PrivilegeManager {
                                 Err(TryRecvError::Empty) => {}
                             }
 
-                            if counter == 120 {
+                            if counter == 300 {
                                 let _ = update_sudo(&sudo_clone);
                                 debug!(
                                     cmd = format!(
@@ -330,7 +330,7 @@ impl PrivilegeManager {
                                 );
                                 counter = 0;
                             }
-                            thread::sleep(Duration::from_millis(500));
+                            thread::sleep(Duration::from_millis(200));
                         }
                     });
                     self.loop_running.store(true, Ordering::Relaxed);

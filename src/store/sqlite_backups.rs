@@ -4,27 +4,38 @@
 
 use crate::store::sqlite::SQLiteStore;
 use crate::utils::FileUtils;
-use crate::utils::file_fs;
+use crate::utils::common::{bytes_to_os_str, os_str_to_bytes};
 use crate::utils::file_metadata;
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
+use derive_builder::Builder;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 /// Representation of a store backup entry (row) in the database.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Builder)]
+#[builder(setter(prefix = "with"))]
 pub(crate) struct StoreBackup {
-    /// Absolute file path of the backed-up file
+    /// Absolute file path of the backed-up file (human-readable)
+    #[builder(setter(into))]
     pub(crate) path: String,
+    /// Absolute file path of the backed-up file (byte vector)
+    pub(crate) path_u8: Vec<u8>,
     /// Type of the file: "link" or "regular"
+    #[builder(setter(into))]
     pub(crate) file_type: String,
     /// Binary content of the file (for regular files)
     pub(crate) content: Option<Vec<u8>>,
-    /// Absolute file path to the source (for symlinks)
+    /// Absolute file path to the source (for symlinks, human-readable)
     pub(crate) link_source: Option<String>,
+    /// Absolute file path to the source (for symlinks, byte vector)
+    pub(crate) link_source_u8: Option<Vec<u8>>,
     /// User and group as string (UID:GID)
+    #[builder(setter(into))]
     pub(crate) owner: String,
     /// File permissions
     pub(crate) permissions: Option<u32>,
@@ -32,30 +43,6 @@ pub(crate) struct StoreBackup {
     pub(crate) checksum: Option<String>,
     /// Date and time when the backup was created
     pub(crate) date: chrono::DateTime<chrono::Utc>,
-}
-
-impl StoreBackup {
-    fn new(
-        file_type: String,
-        path: String,
-        content: Option<Vec<u8>>,
-        link_source: Option<String>,
-        owner: String,
-        permissions: Option<u32>,
-        checksum: Option<String>,
-        date: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
-        StoreBackup {
-            path,
-            file_type,
-            content,
-            link_source,
-            owner,
-            permissions,
-            checksum,
-            date,
-        }
-    }
 }
 
 impl SQLiteStore {
@@ -72,26 +59,37 @@ impl SQLiteStore {
     /// Returns an error if:
     /// - Symlink target path cannot be converted to a string
     /// - User/group IDs cannot be extracted from metadata
-    pub(crate) fn create_symlink_backup(
+    pub(crate) fn create_symlink_backup<P: AsRef<Path>>(
         &self,
-        file_path_str: &str,
+        file_path: P,
         metadata: &file_metadata::FileMetadata,
     ) -> Result<StoreBackup> {
-        let link_source = file_fs::path_to_string(metadata.symlink_source.clone().unwrap())?;
         let (user_id, group_id) = self
-            .get_user_and_group_id(metadata, file_path_str)
-            .wrap_err_with(|| format!("Could not get UID and GUI of {:?}", file_path_str))?;
+            .get_user_and_group_id(metadata, &file_path)
+            .wrap_err_with(|| {
+                format!(
+                    "Could not get UID and GUI of {:?}",
+                    file_path.as_ref().display()
+                )
+            })?;
 
-        Ok(StoreBackup::new(
-            "link".to_string(),
-            file_path_str.to_string(),
-            None,
-            Some(link_source),
-            format!("{}:{}", user_id, group_id),
-            None,
-            None,
-            chrono::offset::Utc::now(),
-        ))
+        Ok(StoreBackupBuilder::default()
+            .with_path(file_path.as_ref().to_string_lossy())
+            .with_path_u8(os_str_to_bytes(file_path.as_ref()))
+            .with_file_type("link")
+            .with_content(None)
+            .with_link_source(
+                metadata
+                    .symlink_source
+                    .as_ref()
+                    .map(|s| s.to_string_lossy().to_string()),
+            )
+            .with_link_source_u8(metadata.symlink_source.as_ref().map(|s| os_str_to_bytes(s)))
+            .with_owner(format!("{}:{}", user_id, group_id))
+            .with_permissions(None)
+            .with_checksum(None)
+            .with_date(chrono::offset::Utc::now())
+            .build()?)
     }
 
     /// Creates a backup entry for a regular file in the store database.
@@ -112,31 +110,43 @@ impl SQLiteStore {
     pub(crate) async fn create_regular_file_backup<P: AsRef<Path>>(
         &self,
         file_path: P,
-        file_path_str: &str,
         metadata: file_metadata::FileMetadata,
     ) -> Result<StoreBackup> {
         let (user_id, group_id) = self
-            .get_user_and_group_id(&metadata, file_path_str)
-            .wrap_err_with(|| format!("Could not get UID and GUI of {:?}", file_path_str))?;
-        let permissions = metadata
-            .permissions
-            .ok_or_else(|| eyre!("Could not get permissions of {:?}", file_path_str))?;
-        let checksum = metadata
-            .checksum
-            .ok_or_else(|| eyre!("Could not get checksum of {:?}", file_path_str))?;
+            .get_user_and_group_id(&metadata, &file_path)
+            .wrap_err_with(|| {
+                format!(
+                    "Could not get UID and GUI of {:?}",
+                    file_path.as_ref().display()
+                )
+            })?;
+        let permissions = metadata.permissions.ok_or_else(|| {
+            eyre!(
+                "Could not get permissions of {:?}",
+                file_path.as_ref().display()
+            )
+        })?;
+        let checksum = metadata.checksum.ok_or_else(|| {
+            eyre!(
+                "Could not get checksum of {:?}",
+                file_path.as_ref().display()
+            )
+        })?;
 
         let content = self.read_file_content(&file_path).await?;
 
-        Ok(StoreBackup::new(
-            "regular".to_string(),
-            file_path_str.to_string(),
-            Some(content),
-            None,
-            format!("{}:{}", user_id, group_id),
-            Some(permissions),
-            Some(checksum),
-            chrono::offset::Utc::now(),
-        ))
+        Ok(StoreBackupBuilder::default()
+            .with_path(file_path.as_ref().to_string_lossy())
+            .with_path_u8(os_str_to_bytes(file_path.as_ref()))
+            .with_file_type("regular")
+            .with_content(Some(content))
+            .with_link_source(None)
+            .with_link_source_u8(None)
+            .with_owner(format!("{}:{}", user_id, group_id))
+            .with_permissions(Some(permissions))
+            .with_checksum(Some(checksum))
+            .with_date(chrono::offset::Utc::now())
+            .build()?)
     }
 
     /// Extracts user and group IDs from file metadata.
@@ -149,17 +159,17 @@ impl SQLiteStore {
     /// Returns an error if:
     /// - UID is missing from metadata
     /// - GID is missing from metadata
-    fn get_user_and_group_id(
+    fn get_user_and_group_id<P: AsRef<Path>>(
         &self,
         metadata: &file_metadata::FileMetadata,
-        file_path_str: &str,
+        file_path: P,
     ) -> Result<(u32, u32)> {
         let user_id = metadata
             .uid
-            .ok_or_else(|| eyre!("Could not get UID of {:?}", file_path_str))?;
+            .ok_or_else(|| eyre!("Could not get UID of {}", file_path.as_ref().display()))?;
         let group_id = metadata
             .gid
-            .ok_or_else(|| eyre!("Could not get GID of {:?}", file_path_str))?;
+            .ok_or_else(|| eyre!("Could not get GID of {}", file_path.as_ref().display()))?;
         Ok((user_id, group_id))
     }
 
@@ -205,21 +215,20 @@ impl SQLiteStore {
         file_path: P,
     ) -> Result<Vec<u8>> {
         let temp_file = tempfile::NamedTempFile::new()?;
-        let temp_path_str = file_fs::path_to_string(&temp_file)?;
 
         self.privilege_manager
             .sudo_exec(
-                "cp",
+                OsString::from_str("cp")?,
                 [
-                    "--preserve",
-                    "--no-dereference",
-                    &file_fs::path_to_string(&file_path)?,
-                    &temp_path_str,
+                    OsString::from_str("--preserve")?,
+                    OsString::from_str("--no-dereference")?,
+                    OsString::from(file_path.as_ref()),
+                    OsString::from(temp_file.path()),
                 ],
                 Some(
                     format!(
-                        "Create temporary copy of {:?} for backup creation",
-                        file_path.as_ref()
+                        "Create temporary copy of {} for backup creation",
+                        file_path.as_ref().display()
                     )
                     .as_str(),
                 ),
@@ -243,7 +252,7 @@ impl SQLiteStore {
 
         fs::read(&temp_file)
             .await
-            .wrap_err_with(|| format!("Failed to read {:?}", &temp_file))
+            .wrap_err_with(|| format!("Failed to read {}", &temp_file.path().display()))
     }
 
     /// Inserts a backup entry into the store database.
@@ -261,14 +270,16 @@ impl SQLiteStore {
     pub(crate) async fn insert_backup_into_db(&self, b_file: StoreBackup) -> Result<()> {
         sqlx::query!(
             r#"
-INSERT INTO backups (path, file_type, content, link_source, owner, permissions, checksum, date)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+INSERT INTO backups (path, path_u8, file_type, content, link_source, link_source_u8, owner, permissions, checksum, date)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 ON CONFLICT(path) DO NOTHING
             "#,
             b_file.path,
+            b_file.path_u8,
             b_file.file_type,
             b_file.content,
             b_file.link_source,
+            b_file.link_source_u8,
             b_file.owner,
             b_file.permissions,
             b_file.checksum,
@@ -293,15 +304,20 @@ ON CONFLICT(path) DO NOTHING
     /// Returns an error if:
     /// - No backup exists for the given path
     /// - Database query fails
-    pub(crate) async fn fetch_backup_from_db(&self, file_path_str: String) -> Result<StoreBackup> {
+    pub(crate) async fn fetch_backup_from_db<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+    ) -> Result<StoreBackup> {
+        let file_path_u8 = os_str_to_bytes(file_path.as_ref());
+
         let backup = sqlx::query_as!(
             StoreBackup,
             r#"
-SELECT path, file_type, content, link_source, owner, permissions as "permissions: u32", checksum, date as "date: chrono::DateTime<chrono::Utc>"
-FROM backups where path = ?1
+SELECT path, path_u8, file_type, content, link_source, link_source_u8, owner, permissions as "permissions: u32", checksum, date as "date: chrono::DateTime<chrono::Utc>"
+FROM backups where path_u8 = ?1
             "#,
-            file_path_str
-        ).fetch_one(&self.pool).await.wrap_err_with(|| format!("Failed to fetch backup for {} from store", file_path_str))?;
+            file_path_u8
+        ).fetch_one(&self.pool).await.wrap_err_with(|| format!("Failed to fetch backup for {} from store", file_path.as_ref().display()))?;
 
         Ok(backup)
     }
@@ -321,19 +337,25 @@ FROM backups where path = ?1
     /// - Setting ownership or permissions fails
     pub(crate) async fn restore_symlink_backup<P: AsRef<Path>>(
         &self,
-        backup: StoreBackup,
+        backup: &StoreBackup,
         to: P,
     ) -> Result<()> {
-        match fs::symlink(backup.link_source.as_ref().unwrap(), &to).await {
+        let link_source_os = bytes_to_os_str(
+            backup
+                .link_source_u8
+                .as_ref()
+                .ok_or_else(|| eyre!("Link source for {} not found", &backup.path))?,
+        );
+        match fs::symlink(&link_source_os, &to).await {
             Ok(_) => (),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 self.privilege_manager
                     .sudo_exec(
-                        "ln",
+                        OsString::from_str("ln")?,
                         [
-                            "-sf",
-                            backup.link_source.as_ref().unwrap(),
-                            to.as_ref().to_str().unwrap(),
+                            OsString::from_str("-sf")?,
+                            link_source_os,
+                            OsString::from(to.as_ref()),
                         ],
                         None,
                     )
@@ -370,7 +392,7 @@ FROM backups where path = ?1
     /// - Moving file to final location fails
     pub(crate) async fn restore_regular_file_backup<P: AsRef<Path>>(
         &self,
-        backup: StoreBackup,
+        backup: &StoreBackup,
         to: P,
     ) -> Result<()> {
         let (write_dest, file) = self.prepare_write_destination(&to).await?;

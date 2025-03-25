@@ -1,8 +1,11 @@
-use crate::modules::ConditionEvaluator;
+use crate::modules::{ConditionEvaluator, ConditionalComponent};
+use std::path::Path;
+use tracing::error;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ModulePackages {
     /// List of package names to install when conditions are met
     pub(crate) install: Vec<String>,
@@ -23,6 +26,18 @@ impl ConditionEvaluator for ModulePackages {
             // Just return true if there is no condition
             Ok(true)
         }
+    }
+}
+
+impl ConditionalComponent for ModulePackages {
+    fn log_error(&self, module: &str, location: &Path, err: impl std::fmt::Display) {
+        error!(
+            module,
+            location = ?location,
+            packages = self.install.join(", "),
+            "Package condition evaluation failed: {}",
+            err
+        );
     }
 }
 

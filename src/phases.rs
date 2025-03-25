@@ -44,19 +44,8 @@ impl DeployPhaseStruct {
                 }
             });
         }
-        let results = set.join_all().await;
-        if results.iter().any(|r| r.is_err()) {
-            // Collect and combine errors
-            let err = results
-                .into_iter()
-                .filter(Result::is_err)
-                .map(Result::unwrap_err)
-                .fold(eyre!("Failed to process modules"), |report, e| {
-                    report.with_error(|| crate::errors::StrError(format!("{:?}", e)))
-                });
 
-            return Err(err);
-        }
+        crate::errors::join_errors(set.join_all().await)?;
 
         Ok(())
     }

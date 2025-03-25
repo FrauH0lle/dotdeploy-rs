@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use toml::Value;
-use tracing::{debug, instrument};
+use tracing::debug;
 use utils::file_fs;
 
 mod cli;
@@ -24,7 +24,6 @@ mod store;
 mod tests;
 mod utils;
 
-#[instrument]
 fn main() {
     // Initialize color_eyre
     color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
@@ -39,7 +38,7 @@ fn main() {
     };
 
     // Initialize logging
-    let logger = match logs::LoggerBuilder::new()
+    let logger = match logs::LoggerBuilder::default()
         .with_verbosity(cli::get_cli().verbosity)
         .with_log_dir(&dotdeploy_config.logs_dir)
         .with_max_logs(dotdeploy_config.logs_max)
@@ -69,7 +68,7 @@ fn main() {
         Ok((success, loop_running)) => {
             if loop_running {
                 let _ = tx.send(());
-                std::thread::sleep(std::time::Duration::from_millis(600));
+                std::thread::sleep(std::time::Duration::from_millis(210));
             }
             match success {
                 true => std::process::exit(0),
@@ -80,7 +79,7 @@ fn main() {
             eprintln!("An error occured during deployment. Exiting");
             eprintln!("{:?}", e);
             let _ = tx.send(());
-            std::thread::sleep(std::time::Duration::from_millis(600));
+            std::thread::sleep(std::time::Duration::from_millis(210));
             std::process::exit(1);
         }
     }
@@ -102,7 +101,7 @@ fn init_config() -> Result<config::DotdeployConfig> {
     let cli = cli::get_cli();
 
     // Initialize config and merge CLI args into config
-    let dotdeploy_config = DotdeployConfigBuilder::new()
+    let dotdeploy_config = DotdeployConfigBuilder::default()
         .with_dry_run(cli.dry_run)
         .with_force(cli.force)
         .with_noconfirm(cli.noconfirm)
@@ -113,6 +112,7 @@ fn init_config() -> Result<config::DotdeployConfig> {
         .with_hostname(cli.hostname)
         .with_distribution(cli.distribution)
         .with_use_sudo(cli.use_sudo)
+        .with_sudo_cmd(cli.sudo_cmd)
         .with_deploy_sys_files(cli.deploy_sys_files)
         .with_install_pkg_cmd(cli.install_pkg_cmd)
         .with_remove_pkg_cmd(cli.remove_pkg_cmd)
@@ -125,7 +125,7 @@ fn init_config() -> Result<config::DotdeployConfig> {
 
     Ok(dotdeploy_config)
 }
-
+ 
 /// Make config available as environment variables.
 ///
 /// For nearly all configuration values, a corresponding environment variable will be set.
@@ -260,7 +260,7 @@ async fn run(
             .with_channel_rx(Some(rx))
             .build()?,
     );
-
+    
     // Initialize stores
     let stores = Arc::new(
         store::Stores::new(&config, Arc::clone(&pm))
@@ -269,21 +269,29 @@ async fn run(
     );
     debug!(stores = ?stores, "Stores initialized");
 
-    // Initialize handlebars templating
+    // --
+    // * Initialize handlebars templating
+
     let mut handlebars: Handlebars<'static> = Handlebars::new();
     handlebars.set_strict_mode(true);
+    handlebars_misc_helpers::register(&mut handlebars);
     handlebars.register_helper("contains", Box::new(handlebars_helper::contains_helper));
+    handlebars.register_helper("is_executable", Box::new(handlebars_helper::is_executable_helper));
+    handlebars.register_helper("find_executable", Box::new(handlebars_helper::find_executable_helper));
+    handlebars.register_helper("command_success", Box::new(handlebars_helper::command_success_helper));
+    handlebars.register_helper("command_output", Box::new(handlebars_helper::command_output_helper));
+
     // Set up the context used by handlebars
     let context = setup_context(&config)?;
 
     // Wrap config in an Arc as it will be shared across threads
     let config = Arc::new(config);
 
-    // Get CLI parameters
-    let cli = cli::get_cli();
-
     // --
     // * Execute
+
+    // Get CLI parameters
+    let cli = cli::get_cli();
 
     let cmd_result = match cli.command {
         cli::Commands::Deploy { modules } => {
@@ -306,10 +314,32 @@ async fn run(
             )
             .await
         }
-        cli::Commands::Remove { modules } => todo!(),
-        cli::Commands::Update { packages } => {
-            cmds::update::update(config, Arc::clone(&stores), Arc::clone(&pm)).await
+        cli::Commands::Remove { modules } => {
+            let modules = modules.unwrap_or_else(|| {
+                // IF no modules are given, assume host module
+                let host_module = [
+                    config.hosts_root.display().to_string().clone(),
+                    config.hostname.clone(),
+                ]
+                .join(std::path::MAIN_SEPARATOR_STR);
+                vec![host_module]
+            });
+            cmds::remove::remove(
+                modules,
+                config,
+                Arc::clone(&stores),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        },
+        cli::Commands::Update { modules } => {
+            cmds::update::update(modules, config, Arc::clone(&stores), Arc::clone(&pm)).await
         }
+        cli::Commands::Lookup { file } => {
+            cmds::lookup::lookup(file, Arc::clone(&stores)).await
+        },
         cli::Commands::Sync { auto } => todo!(),
         cli::Commands::Validate { diff, fix } => todo!(),
         cli::Commands::Nuke { really } => todo!(),

@@ -1,13 +1,14 @@
 use crate::cmds::common;
 use crate::store::Store;
 use crate::store::sqlite_files::StoreFile;
-use crate::store::sqlite_modules::StoreModule;
+use crate::store::sqlite_modules::StoreModuleBuilder;
+use crate::utils::common::os_str_to_bytes;
 use crate::utils::{FileUtils, file_fs};
 use crate::{
     config::DotdeployConfig, modules::queue::ModulesQueueBuilder, store::Stores,
     utils::sudo::PrivilegeManager,
 };
-use color_eyre::eyre::{WrapErr, eyre};
+use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Report, Result};
 use handlebars::Handlebars;
 use std::collections::{HashMap, HashSet};
@@ -15,56 +16,27 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use toml::Value;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, warn};
 
-// deploy command
-//
-// Is an async function
-// Accepts vec of module names as input
-// Further needed args: stores, context, handlebars, privilege manager
-// If no module name provided from CLI, default to "hosts/HOSTNAME" (HOSTNAME from dotdeploy config
-// struct)
-//
-// Init modulequeue with module names
-// call collect module names
-// call collect context
-// call finalize
-// call process and get setup, deploy, config and remove phase
-//
-// For every deployed file of, check if
-//  a) target checksum still corresponds to target checksum in store (copy type)
-//  b) source checksum still corresponds to source checksum in store (copy type)
-//  c) the source file still exists (copy, link and create type)
-// If file does not exist anymore, remove file and restore backup.
-// If target checksum does not correspond to target checksum in store, it means that it was modified
-// outside of dotdeploy.
-//  -> Issue warning that contents will be overwritten and ask user for confirmation
-//  -> Refer to sync command
-// If source checksums differ it means that it should be updated.
-// If all conditions hold for a copy file, it means it is up-to-date and can be removed from the
-// deployment queue. Same for link which have a valid source -> target relationship.
-// Create files should simply always be generated anew or deleted if their source is gone.
-// Operation should be async.
-//
-// Group files into files going into the user's home directory and other in order to select the
-// correct store.
-//
-// for each phase in setup, deploy and config
-//  - run pre step tasks (sync)
-//  - deploy files (async, in setup and config phase) or install packages (only deploy phase)
-//   - Needs copy, lind and create methods
-//   - copy and create should run template expansion
-//  - run post step tasks (sync)
-// Idea: use temp_env to set DOD_CURRENT_MODULE during tasks.
-// Tasks should be sync because we cannot control what is happenig so just run them in order.
-//
-// Store the tasks from remove and the messages of remove type in store. They should be used by the
-// remove command. Drop any present ones in store before.
-//
-// Run generators for all module in store.
-// Display messages of deploy type.
-
-#[instrument(level = "trace")]
+/// Executes the full deployment pipeline for specified modules
+///
+/// Orchestrates the deployment process including:
+/// - Module dependency resolution
+/// - Context collection and template processing  
+/// - Phase-based deployment (setup/config/update)
+/// - Package management
+/// - File generation and message handling
+///
+/// # Arguments
+/// * `modules` - Module names to deploy
+/// * `config` - Shared application configuration
+/// * `stores` - Database stores for deployment tracking
+/// * `context` - Template context variables
+/// * `handlebars` - Template engine registry
+/// * `pm` - Privilege manager for elevated operations
+///
+/// # Errors
+/// Returns error if any deployment phase fails or invalid configuration is detected
 pub(crate) async fn deploy(
     modules: Vec<String>,
     config: Arc<DotdeployConfig>,
@@ -74,95 +46,64 @@ pub(crate) async fn deploy(
     pm: Arc<PrivilegeManager>,
 ) -> Result<bool> {
     let mut mod_queue = ModulesQueueBuilder::new()
-        // FIXME 2025-03-22: Avoid clone
-        .with_modules(modules.clone())
+        .with_modules(modules)
         .build(&config)?;
 
-    mod_queue
-        .collect_module_names(&mut context)
-        .wrap_err("Failed to collect module names")?;
+    let module_names = mod_queue.collect_module_names(&mut context);
     mod_queue
         .collect_context(&mut context)
         .wrap_err("Failed to collect context")?;
     mod_queue.finalize(&context, &handlebars)?;
 
-    // Ensure modules are set
+    // Ensure modules are available in the store
+    let mut set = JoinSet::new();
     for module in mod_queue.modules.iter() {
-        stores
-            .add_module(&StoreModule::new(
-                module.name.clone(),
-                file_fs::path_to_string(&module.location)?,
-                Some(whoami::username()),
-                module.reason.clone(),
-                module.depends_on.clone(),
-                chrono::offset::Utc::now(),
-            ))
-            .await?
+        let name = module.name.clone();
+        let location = module.location.to_string_lossy().to_string();
+        let location_u8 = os_str_to_bytes(&module.location);
+        let user = Some(whoami::username());
+        let reason = module.reason.clone();
+        let depends = module.depends_on.clone();
+        let date = chrono::offset::Utc::now();
+        let stores = Arc::clone(&stores);
+        set.spawn(async move {
+            stores
+                .add_module(
+                    &StoreModuleBuilder::default()
+                        .with_name(&name)
+                        .with_location(location)
+                        .with_location_u8(location_u8)
+                        .with_user(user)
+                        .with_reason(reason)
+                        .with_depends(depends)
+                        .with_date(date)
+                        .build()?,
+                )
+                .await
+                .wrap_err(format!("Failed to add module '{}' to store", name))
+        });
     }
+    crate::errors::join_errors(set.join_all().await)?;
 
     let (
         mut setup_phase,
         mut config_phase,
         mut update_phase,
         mut remove_phase,
-        packages,
+        mut packages,
         file_generators,
         module_messages,
     ) = mod_queue.process(Arc::clone(&config)).await?;
 
-    let op_tye = "copy";
-
-    // Insert a module
-    for test_m in ["test1", "test2", "test3"] {
-        for i in 0..5 {
-            let local_time = chrono::offset::Utc::now();
-            let test_file = StoreFile::new(
-                test_m.to_string(),
-                match op_tye {
-                    "link" => Some(format!("/dotfiles/foo{}.txt", i)),
-                    "copy" => Some(format!("/dotfiles/foo{}.txt", i)),
-                    "create" => None,
-                    _ => {
-                        return Err(eyre!(
-                            "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
-                        ));
-                    }
-                },
-                match op_tye {
-                    "link" => Some(format!("source_checksum{}", i)),
-                    "copy" => Some(format!("source_checksum{}", i)),
-                    "create" => None,
-                    _ => {
-                        return Err(eyre!(
-                            "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
-                        ));
-                    }
-                },
-                format!("/home/{}/foo{}.txt", test_m, i),
-                Some(format!("dest_checksum{}", i)),
-                match op_tye {
-                    "link" => "link".to_string(),
-                    "copy" => "copy".to_string(),
-                    "create" => "create".to_string(),
-                    _ => {
-                        return Err(eyre!(
-                            "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
-                        ));
-                    }
-                },
-                Some("user".to_string()),
-                local_time,
-            );
-
-            stores.user_store.add_file(test_file.clone()).await?;
-            stores
-                .system_store
-                .as_ref()
-                .unwrap()
-                .add_file(test_file)
-                .await?;
-        }
+    // Sanitize packages & and check install condition
+    packages.retain(|p| !p.package.is_empty());
+    if !packages.is_empty() && config.install_pkg_cmd.is_none() {
+        dbg!(&packages);
+        return Err(eyre!(
+            "Found packages to install, but `install_pkg_cmd` is not defined"
+        ));
     }
+
     let deployed_modules = stores
         .get_all_modules()
         .await?
@@ -216,85 +157,85 @@ pub(crate) async fn deploy(
     debug!("SETUP phase complete");
 
     // Install packages
-    //
-    // FIXME 2025-03-20: The checks if packages should be installed need to happen before the
-    //   deployment starts.
-
     if config.skip_pkg_install {
         info!("Skipping package installation as requested");
     } else if !packages.is_empty() {
-        if config.install_pkg_cmd.is_none() {
-            warn!(
-                "Found packages to install, but `install_pkg_cmd` in config is not defined! Skipping package installation."
+        info!("Installing packages");
+
+        // Verify installed packages
+        let mut obsolete = vec![];
+        let pkg_modules = packages
+            .iter()
+            .map(|x| &x.module_name)
+            .collect::<HashSet<_>>();
+
+        // For each module, get all registered packages
+        // REVIEW 2025-03-28: Can be aysnc
+        for pmod in pkg_modules {
+            let store_pkgs: HashSet<String> =
+                HashSet::from_iter(stores.get_all_module_packages(&pmod).await?.into_iter());
+            let requested_pkgs = HashSet::from_iter(
+                packages
+                    .iter()
+                    .filter(|p| p.module_name == *pmod)
+                    .map(|p| p.package.clone()),
             );
-        } else {
-            info!("Installing packages");
-
-            // Verify installed packages
-            let mut obsolete = vec![];
-            let pkg_modules = packages
-                .iter()
-                .map(|x| &x.module_name)
+            // The packages which are in store but not in the config anymore -> Should be removed
+            let diff = store_pkgs
+                .difference(&requested_pkgs)
                 .collect::<HashSet<_>>();
-
-            // For each module, get all registered packages
-            for pmod in pkg_modules {
-                let store_pkgs: HashSet<String> =
-                    HashSet::from_iter(stores.get_all_module_packages(&pmod).await?.into_iter());
-                let requested_pkgs = HashSet::from_iter(
-                    packages
-                        .iter()
-                        .filter(|p| p.module_name == *pmod)
-                        .map(|p| p.package.clone()),
-                );
-                // The packages which are in store but not in the config anymore -> Should be removed
-                let diff = store_pkgs
-                    .difference(&requested_pkgs)
-                    .collect::<HashSet<_>>();
-                let other_module_pkgs = stores.get_all_other_module_packages(&pmod).await?;
-                // Drop packages for module
-                for p in diff {
-                    stores.remove_package(pmod, p).await?;
-                    if !other_module_pkgs.contains(pmod) {
-                        obsolete.push(p.to_string());
-                    }
+            let other_module_pkgs = stores.get_all_other_module_packages(&pmod).await?;
+            // Drop packages for module
+            for p in diff {
+                stores.remove_package(pmod, p).await?;
+                if !other_module_pkgs.contains(pmod) {
+                    obsolete.push(p.to_string());
                 }
             }
-
-            // Remove obsolete packages
-
-            // REVIEW 2025-03-21: Remove empty string
-            obsolete.retain(|p| !p.is_empty());
-            if !obsolete.is_empty() {
-                let obsolete = obsolete.into_iter().map(OsString::from).collect::<Vec<_>>();
-                common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &obsolete, &pm)
-                    .await?;
-            }
-
-            // Add packages to store
-
-            // REVIEW 2025-03-21: Remove empty string
-            let packages = packages
-                .into_iter()
-                .filter(|p| !p.package.is_empty())
-                .collect::<Vec<_>>();
-
-            for p in packages.iter() {
-                stores.add_package(&p.module_name, &p.package).await?
-            }
-
-            let packages = packages
-                .into_iter()
-                .map(|p| OsString::from(p.package))
-                .collect::<Vec<_>>();
-
-            if !packages.is_empty() {
-                common::exec_package_cmd(config.install_pkg_cmd.as_ref().unwrap(), &packages, &pm)
-                    .await?;
-            }
-
-            info!("Package installation complete");
         }
+
+        // Remove obsolete packages
+
+        // REVIEW 2025-03-21: Remove empty string
+        obsolete.retain(|p| !p.is_empty());
+        if !obsolete.is_empty() {
+            let obsolete = obsolete.into_iter().map(OsString::from).collect::<Vec<_>>();
+            common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &obsolete, &pm)
+                .await?;
+        }
+
+        // Add packages to store
+
+        // REVIEW 2025-03-21: Remove empty string
+        let packages = packages
+            .into_iter()
+            .filter(|p| !p.package.is_empty())
+            .collect::<Vec<_>>();
+
+        // REVIEW 2025-03-28: Can be aysnc
+        for p in packages.iter() {
+            stores.add_package(&p.module_name, &p.package).await?
+        }
+
+        let packages = packages
+            .into_iter()
+            .map(|p| OsString::from(p.package))
+            .collect::<Vec<_>>();
+
+        if !packages.is_empty() {
+            common::exec_package_cmd(
+                config
+                    .install_pkg_cmd
+                    .as_ref()
+                    .ok_or_eyre("Missing package install command in config")?,
+                &packages,
+                &pm,
+            )
+            .await
+            .wrap_err("Failed to install required packages")?;
+        }
+
+        info!("Package installation complete");
     }
 
     debug!("Running CONFIG phase");
@@ -312,6 +253,7 @@ pub(crate) async fn deploy(
 
     // Generate files
     debug!("Generating files");
+    // REVIEW 2025-03-28: Can be aysnc
     for file in file_generators {
         file.generate_file(&stores, &context, &hb, &config, Arc::clone(&pm))
             .await?;
@@ -322,7 +264,8 @@ pub(crate) async fn deploy(
     debug!("Displaying messages");
 
     // Drop old messages
-    for module in modules.iter() {
+    // REVIEW 2025-03-28: Make a loop
+    for module in module_names.iter() {
         stores
             .user_store
             .remove_all_cached_messages(module.as_str(), "update")
@@ -332,8 +275,6 @@ pub(crate) async fn deploy(
             .remove_all_cached_messages(module.as_str(), "remove")
             .await?;
     }
-
-
 
     // Add new messages
     for msg in module_messages.into_iter() {
@@ -346,44 +287,54 @@ pub(crate) async fn deploy(
     }
 
     // Cache update and remove phase
-    if let Some(mut cached_update_tasks) = stores.user_store.get_all_cached_tasks("update").await {
-        cached_update_tasks.tasks.retain(|t| !modules.contains(&t.module_name));
+    // REVIEW 2025-03-28: Make a loop
+    if let Some(mut cached_update_tasks) = stores.user_store.get_cached_commands("update").await? {
+        cached_update_tasks
+            .tasks
+            .retain(|t| !module_names.contains(&t.module_name));
         update_phase.tasks.append(&mut cached_update_tasks.tasks);
     }
-    if let Some(mut cached_remove_tasks) = stores.user_store.get_all_cached_tasks("remove").await {
-        cached_remove_tasks.tasks.retain(|t| !modules.contains(&t.module_name));
+    if let Some(mut cached_remove_tasks) = stores.user_store.get_cached_commands("remove").await? {
+        cached_remove_tasks
+            .tasks
+            .retain(|t| !module_names.contains(&t.module_name));
         remove_phase.tasks.append(&mut cached_remove_tasks.tasks);
     }
 
-    stores.user_store.cache_phase("update", update_phase).await?;
-    stores.user_store.cache_phase("remove", remove_phase).await?;
+    stores
+        .user_store
+        .cache_command("update", update_phase)
+        .await?;
+    stores
+        .user_store
+        .cache_command("remove", remove_phase)
+        .await?;
 
     debug!("Deploy command complete");
     Ok(true)
 }
 
-async fn collect_deployed_files(
-    deployed_modules: HashSet<String>,
+async fn collect_deployed_files<I>(
+    deployed_modules: I,
     stores: Arc<Stores>,
-) -> Result<Vec<StoreFile>> {
+) -> Result<Vec<StoreFile>>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut set = JoinSet::new();
 
     for name in deployed_modules {
         set.spawn({
             let stores = Arc::clone(&stores);
-            let name = name.clone();
+            let name = name;
             async move {
-                let files = stores.get_all_files(&name).await?;
+                let files = stores.get_all_files(name).await?;
                 Ok::<_, Report>(files)
             }
         });
     }
 
-    let deployed_files = set
-        .join_all()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, Report>>()?
+    let deployed_files = crate::errors::join_errors(set.join_all().await)?
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
@@ -391,12 +342,15 @@ async fn collect_deployed_files(
     Ok(deployed_files)
 }
 
-async fn validate_deployed_files(
-    deployed_files: Vec<StoreFile>,
+async fn validate_deployed_files<I>(
+    deployed_files: I,
     config: Arc<DotdeployConfig>,
     pm: Arc<PrivilegeManager>,
     stores: Arc<Stores>,
-) -> Result<Vec<String>> {
+) -> Result<Vec<String>>
+where
+    I: IntoIterator<Item = StoreFile>,
+{
     let mut set = JoinSet::new();
 
     for file in deployed_files {
@@ -472,11 +426,7 @@ async fn validate_deployed_files(
         });
     }
 
-    let modified_files = set
-        .join_all()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, Report>>()?
+    let modified_files = crate::errors::join_errors(set.join_all().await)?
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();

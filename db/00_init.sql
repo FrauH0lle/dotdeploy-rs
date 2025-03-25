@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS modules (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   location TEXT NOT NULL,
+  location_u8 BLOB NOT NULL,
   user TEXT,
   reason TEXT NOT NULL,
   depends TEXT,
@@ -12,8 +13,10 @@ CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY,
   module_id INTEGER,
   source TEXT,
+  source_u8 BLOB,
   source_checksum TEXT,
   target TEXT NOT NULL UNIQUE,
+  target_u8 BLOB NOT NULL UNIQUE,
   target_checksum TEXT,
   operation TEXT NOT NULL,
   user TEXT,
@@ -25,9 +28,11 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS backups (
   id INTEGER PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
+  path_u8 BLOB NOT NULL UNIQUE,
   file_type TEXT NOT NULL,
   content BLOB,
   link_source TEXT,
+  link_source_u8 BLOB,
   owner TEXT NOT NULL,
   permissions INTEGER,
   checksum TEXT,
@@ -43,9 +48,9 @@ CREATE TABLE IF NOT EXISTS packages (
   ON DELETE CASCADE ON UPDATE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS phase_cache (
+CREATE TABLE IF NOT EXISTS command_cache (
   id INTEGER PRIMARY KEY,
-  phase TEXT NOT NULL UNIQUE,
+  command TEXT NOT NULL UNIQUE,
   data TEXT NOT NULL
 );
 

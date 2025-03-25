@@ -1,15 +1,16 @@
 use crate::config::DotdeployConfig;
 use crate::modules::messages::CommandMessage;
-use crate::modules::tasks::ModuleTask;
 use crate::store::DeployPhaseStruct;
-use crate::store::sqlite_backups::StoreBackup;
+use crate::store::sqlite_backups::StoreBackupBuilder;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
+use crate::store::sqlite_modules::StoreModuleBuilder;
 use crate::store::{Store, create_system_dir, create_user_dir};
+use crate::utils::common::{bytes_to_os_str, os_str_to_bytes};
 use crate::utils::sudo::PrivilegeManager;
 use crate::utils::{FileUtils, file_fs};
-use color_eyre::eyre::WrapErr;
+use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use sqlx::sqlite;
 use std::collections::HashSet;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs;
-use tracing::{debug, instrument};
+use tracing::debug;
 
 /// Representation of the store database
 #[derive(Clone, Debug)]
@@ -187,93 +188,140 @@ impl Store for SQLiteStore {
     // --
     // * Backups
 
-    #[instrument(skip(file_path))]
     async fn add_backup<P: AsRef<Path>>(&self, file_path: P) -> Result<()> {
         let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
-        let file_path_str = file_fs::path_to_string(&file_path)?;
-        let metadata = file_utils.get_file_metadata(&file_path).await?;
 
-        let b_file: StoreBackup = if metadata.is_symlink {
-            self.create_symlink_backup(&file_path_str, &metadata)?
-        } else {
-            self.create_regular_file_backup(&file_path, &file_path_str, metadata)
-                .await?
+        let metadata = file_utils
+            .get_file_metadata(&file_path)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to get metadata for {}",
+                    &file_path.as_ref().display()
+                )
+            })?;
+
+        let b_file = match metadata.is_symlink {
+            true => self
+                .create_symlink_backup(&file_path, &metadata)
+                .wrap_err("Failed to create symlink backup")?,
+            false => self
+                .create_regular_file_backup(&file_path, metadata)
+                .await
+                .wrap_err("Failed to create regular file backup")?,
         };
 
-        self.insert_backup_into_db(b_file).await
+        self.insert_backup_into_db(b_file)
+            .await
+            .wrap_err("Failed to insert backup into database")
     }
 
     async fn add_dummy_backup<P: AsRef<Path>>(&self, file_path: P) -> Result<()> {
-        let file_path_str = file_fs::path_to_string(&file_path)?;
-
-        self.insert_backup_into_db(StoreBackup {
-            path: file_path_str,
-            file_type: "dummy".to_string(),
-            content: None,
-            link_source: None,
-            owner: "9999:9999".to_string(),
-            permissions: None,
-            checksum: None,
-            date: chrono::offset::Utc::now(),
-        })
+        self.insert_backup_into_db(
+            StoreBackupBuilder::default()
+                .with_path(file_path.as_ref().to_string_lossy())
+                .with_path_u8(os_str_to_bytes(file_path.as_ref()))
+                .with_file_type("dummy")
+                .with_content(None)
+                .with_link_source(None)
+                .with_link_source_u8(None)
+                .with_owner("9999:9999".to_string())
+                .with_permissions(None)
+                .with_checksum(None)
+                .with_date(chrono::offset::Utc::now())
+                .build()?,
+        )
         .await
     }
 
     async fn remove_backup<P: AsRef<Path>>(&self, file_path: P) -> Result<()> {
-        let file_path_str = file_fs::path_to_string(&file_path)?;
+        let file_path_u8 = os_str_to_bytes(file_path.as_ref());
 
-        sqlx::query!("DELETE FROM backups WHERE path = ?1", file_path_str)
+        sqlx::query!("DELETE FROM backups WHERE path_u8 = ?1", file_path_u8)
             .execute(&self.pool)
             .await
-            .wrap_err_with(|| format!("Failed to remove backup of {}", file_path_str))?;
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to remove backup for '{}'",
+                    file_path.as_ref().display()
+                )
+            })?;
 
         Ok(())
     }
 
-    #[instrument(skip(path))]
-    async fn check_backup_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
-        let path_str = file_fs::path_to_string(path)?;
-        let store_path = self.path.clone();
+    async fn check_backup_exists<P: AsRef<Path>>(&self, file_path: P) -> Result<bool> {
+        let file_path_u8 = os_str_to_bytes(file_path.as_ref());
 
         debug!(
-            "Looking for backup of {} in {}",
-            &path_str,
-            &store_path.display()
+            "Checking backup existence for {} in {}",
+            file_path.as_ref().display(),
+            self.path().display()
         );
-        let result = sqlx::query!("SELECT path FROM backups where path = ?1", path_str)
+
+        sqlx::query!("SELECT path FROM backups WHERE path_u8 = ?1", file_path_u8)
             .fetch_optional(&self.pool)
-            .await?;
-        match result {
-            Some(_) => {
-                debug!("Found backup of {} in {}", &path_str, &store_path.display());
-                Ok(true)
-            }
-            None => {
-                debug!(
-                    "Could not find backup of {} in {}",
-                    &path_str,
-                    &store_path.display()
-                );
-                Ok(false)
-            }
-        }
+            .await
+            .map(|result| result.is_some())
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to check backup existence for '{}'",
+                    file_path.as_ref().display()
+                )
+            })
     }
 
-    #[instrument(skip(file_path, to))]
     async fn restore_backup<P: AsRef<Path>>(&self, file_path: P, to: P) -> Result<()> {
-        // Safely handle the possibility that the path cannot be converted to a &str
-        let file_path_str = file_fs::path_to_string(&file_path)?;
+        let backup = self
+            .fetch_backup_from_db(&file_path)
+            .await
+            .wrap_err_with(|| format!("Backup not found for {}", file_path.as_ref().display()))?;
 
-        let backup = self.fetch_backup_from_db(file_path_str).await?;
+        debug!(
+            "Restoring {} backup to {}",
+            file_path.as_ref().display(),
+            to.as_ref().display()
+        );
 
-        match backup.file_type.as_str() {
-            "link" => self.restore_symlink_backup(backup, to).await?,
-            "regular" => self.restore_regular_file_backup(backup, to).await?,
-            "dummy" => (),
-            _ => unreachable!(),
+        let result = match backup.file_type.as_str() {
+            "link" => self.restore_symlink_backup(&backup, &to).await,
+            "regular" => self.restore_regular_file_backup(&backup, &to).await,
+            "dummy" => Ok(()),
+            invalid => Err(eyre!(
+                "Invalid backup type '{}' for {}",
+                invalid,
+                file_path.as_ref().display()
+            )),
+        };
+
+        // Validate checksum for regular files
+        if backup.file_type == "regular" {
+            let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
+            let restored_checksum = file_utils
+                .calculate_sha256_checksum(&to)
+                .await
+                .wrap_err_with(|| {
+                    format!("Failed to verify restored file {}", to.as_ref().display())
+                })?;
+
+            if let Some(expected_checksum) = backup.checksum {
+                if restored_checksum != expected_checksum {
+                    return Err(eyre!(
+                        "Checksum mismatch for restored file {}: expected {}, got {}",
+                        to.as_ref().display(),
+                        expected_checksum,
+                        restored_checksum
+                    ));
+                }
+            } else {
+                return Err(eyre!(
+                    "Missing checksum in backup record for {}",
+                    to.as_ref().display()
+                ));
+            }
         }
 
-        Ok(())
+        result
     }
 
     // --
@@ -287,12 +335,13 @@ impl Store for SQLiteStore {
 
         sqlx::query!(
             r#"
-INSERT INTO modules (name, location, user, reason, depends, date)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+INSERT INTO modules (name, location, location_u8, user, reason, depends, date)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT(name)
 DO UPDATE SET
   name = excluded.name,
   location = excluded.location,
+  location_u8 = excluded.location_u8,
   user = excluded.user,
   reason = CASE
              WHEN modules.reason = 'automatic' AND excluded.reason = 'manual'
@@ -304,6 +353,7 @@ DO UPDATE SET
             "#,
             module.name,
             module.location,
+            module.location_u8,
             module.user,
             module.reason,
             depends_json,
@@ -315,7 +365,7 @@ DO UPDATE SET
     }
 
     async fn remove_module<S: AsRef<str>>(&self, module: S) -> Result<()> {
-        let module = module.as_ref().to_owned();
+        let module = module.as_ref();
         sqlx::query!("DELETE FROM modules WHERE name = ?1", module)
             .execute(&self.pool)
             .await?;
@@ -323,42 +373,49 @@ DO UPDATE SET
         Ok(())
     }
 
-    async fn get_module<S: AsRef<str>>(&self, name: S) -> Result<StoreModule> {
-        let name = name.as_ref().to_owned();
+    async fn get_module<S: AsRef<str>>(&self, name: S) -> Result<Option<StoreModule>> {
+        let name = name.as_ref();
 
         // Fetch the row as an anonymous struct
         let row = sqlx::query!(
             r#"
-SELECT name, location, user, reason, depends, date as "date: chrono::DateTime<chrono::Utc>"
+SELECT name, location, location_u8, user, reason, depends, date as "date: chrono::DateTime<chrono::Utc>"
 FROM modules
 WHERE name = ?1
             "#,
             name
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
         // Deserialize the depends JSON string
-        let depends = match row.depends {
-            Some(json_str) if json_str == "[]" => None,
-            Some(json_str) => serde_json::from_str(&json_str)?,
-            None => None,
-        };
-
-        Ok(StoreModule {
-            name: row.name,
-            location: row.location,
-            user: row.user,
-            reason: row.reason,
-            depends,
-            date: row.date,
-        })
+        match row {
+            Some(module) => {
+                let depends = match module.depends {
+                    Some(json_str) if json_str == "[]" => None,
+                    Some(json_str) => serde_json::from_str(&json_str)?,
+                    None => None,
+                };
+                Ok(Some(
+                    StoreModuleBuilder::default()
+                        .with_name(module.name)
+                        .with_location(module.location)
+                        .with_location_u8(module.location_u8)
+                        .with_user(module.user)
+                        .with_reason(module.reason)
+                        .with_depends(depends)
+                        .with_date(module.date)
+                        .build()?,
+                ))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn get_all_modules(&self) -> Result<Vec<StoreModule>> {
         let rows = sqlx::query!(
             r#"
-SELECT name, location, user, reason, depends, date as "date: chrono::DateTime<chrono::Utc>"
+SELECT name, location, location_u8, user, reason, depends, date as "date: chrono::DateTime<chrono::Utc>"
 FROM modules
             "#
         )
@@ -378,6 +435,7 @@ FROM modules
                 StoreModule {
                     name: row.name,
                     location: row.location,
+                    location_u8: row.location_u8,
                     user: row.user,
                     reason: row.reason,
                     depends,
@@ -392,17 +450,16 @@ FROM modules
     // --
     // * Files
 
-    #[instrument(skip(filename))]
-    async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<StoreFile> {
-        let filename_str = file_fs::path_to_string(filename)?;
-        debug!("getting {}", filename_str);
+    async fn get_file<P: AsRef<Path>>(&self, filename: P) -> Result<Option<StoreFile>> {
+        let filename_u8 = os_str_to_bytes(filename.as_ref());
+
         let result = sqlx::query_as!(StoreFile,
         r#"
-SELECT files.source, files.source_checksum, files.target, files.target_checksum, files.operation, files.user, files.date as "date: chrono::DateTime<chrono::Utc>", modules.name AS module
+SELECT files.source, files.source_u8, files.source_checksum, files.target, files.target_u8, files.target_checksum, files.operation, files.user, files.date as "date: chrono::DateTime<chrono::Utc>", modules.name AS module
 FROM files
 INNER JOIN modules ON files.module_id = modules.id
-WHERE files.target = ?1
-        "#, filename_str).fetch_one(&self.pool).await?;
+WHERE files.target_u8 = ?1
+        "#, filename_u8).fetch_optional(&self.pool).await?;
 
         Ok(result)
     }
@@ -415,12 +472,13 @@ WHERE files.target = ?1
 
         sqlx::query!(
             r#"
-INSERT INTO files (module_id, source, source_checksum, target, target_checksum, operation, user, date)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+INSERT INTO files (module_id, source, source_u8, source_checksum, target, target_u8, target_checksum, operation, user, date)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 ON CONFLICT(target)
 DO UPDATE SET
   module_id = excluded.module_id,
   source = excluded.source,
+  source_u8 = excluded.source_u8,
   source_checksum = excluded.source_checksum,
   target_checksum = excluded.target_checksum,
   operation = excluded.operation,
@@ -429,8 +487,10 @@ DO UPDATE SET
             "#,
             module_id.id,
             file.source,
+            file.source_u8,
             file.source_checksum,
             file.target,
+            file.target_u8,
             file.target_checksum,
             file.operation,
             file.user,
@@ -441,8 +501,8 @@ DO UPDATE SET
     }
 
     async fn remove_file<S: AsRef<str>>(&self, file: S) -> Result<()> {
-        let file = file.as_ref().to_owned();
-        sqlx::query!("DELETE FROM files WHERE target = ?1", file)
+        let file = os_str_to_bytes(file.as_ref());
+        sqlx::query!("DELETE FROM files WHERE target_u8 = ?1", file)
             .execute(&self.pool)
             .await?;
 
@@ -454,7 +514,7 @@ DO UPDATE SET
 
         let result = sqlx::query_as!(StoreFile,
     r#"
-SELECT files.source, files.source_checksum, files.target, files.target_checksum, files.operation, files.user, files.date as "date: chrono::DateTime<chrono::Utc>", modules.name AS module
+SELECT files.source, files.source_u8, files.source_checksum, files.target, files.target_u8, files.target_checksum, files.operation, files.user, files.date as "date: chrono::DateTime<chrono::Utc>", modules.name AS module
 FROM files
 INNER JOIN modules ON files.module_id = modules.id
 WHERE modules.name = ?1
@@ -463,23 +523,35 @@ WHERE modules.name = ?1
         Ok(result)
     }
 
-    #[instrument(skip(path))]
     async fn check_file_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
-        let path_str = file_fs::path_to_string(path)?;
-        let store_path = self.path.clone();
+        // let path_str = file_fs::path_to_string(path)?;
+        // let store_path = self.path.clone();
+        let path_u8 = os_str_to_bytes(path.as_ref());
 
-        debug!("Looking for {} in {}", &path_str, &self.path.display());
+        debug!(
+            "Looking for {} in {}",
+            path.as_ref().display(),
+            self.path.display()
+        );
 
-        let result = sqlx::query!("SELECT target FROM files WHERE target = ?1", path_str)
+        let result = sqlx::query!("SELECT target FROM files WHERE target_u8 = ?1", path_u8)
             .fetch_optional(&self.pool)
             .await?;
         match result {
             Some(_) => {
-                debug!("Found {} in {}", &path_str, &store_path.display());
+                debug!(
+                    "Found {} in {}",
+                    path.as_ref().display(),
+                    self.path.display()
+                );
                 Ok(true)
             }
             None => {
-                debug!("Could not find {} in {}", &path_str, &store_path.display());
+                debug!(
+                    "Could not find {} in {}",
+                    path.as_ref().display(),
+                    self.path.display()
+                );
                 Ok(false)
             }
         }
@@ -492,68 +564,71 @@ WHERE modules.name = ?1
         &self,
         filename: P,
     ) -> Result<StoreSourceFileChecksum> {
-        // Convert the path to a string, handling potential conversion errors
-        let filename_str = file_fs::path_to_string(filename)?;
+        let filename_u8 = os_str_to_bytes(filename.as_ref());
 
         // Retrieve the checksum for the source file
         let file = sqlx::query!(
-            "SELECT source, source_checksum FROM files WHERE target = ?1",
-            filename_str
+            "SELECT source_u8, source_checksum FROM files WHERE target_u8 = ?1",
+            filename_u8
         )
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(file.map_or(StoreSourceFileChecksum::new(None, None), |f| {
-            StoreSourceFileChecksum::new(f.source, f.source_checksum)
-        }))
+        Ok(
+            file.map_or(StoreSourceFileChecksum::new::<PathBuf>(None, None), |f| {
+                StoreSourceFileChecksum::new(Some(filename.as_ref()), f.source_checksum)
+            }),
+        )
     }
 
     async fn get_target_checksum<P: AsRef<Path>>(
         &self,
         filename: P,
     ) -> Result<StoreTargetFileChecksum> {
-        // Convert the path to a string, handling potential conversion errors
-        let filename_str = file_fs::path_to_string(filename)?;
+        let filename_u8 = os_str_to_bytes(filename.as_ref());
 
         // Retrieve the checksum for the source file
         let file = sqlx::query_as!(
             StoreTargetFileChecksum,
-            "SELECT target, target_checksum FROM files WHERE target = ?1",
-            filename_str
+            "SELECT target, target_checksum FROM files WHERE target_u8 = ?1",
+            filename_u8
         )
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(
-            file.map_or(StoreTargetFileChecksum::new(filename_str, None), |f| {
+            file.map_or(StoreTargetFileChecksum::new(filename.as_ref(), None), |f| {
                 StoreTargetFileChecksum::new(f.target, f.target_checksum)
             }),
         )
     }
 
     async fn get_all_source_checksums(&self) -> Result<Vec<StoreSourceFileChecksum>> {
-        let res = sqlx::query_as!(
-            StoreSourceFileChecksum,
-            "SELECT source, source_checksum FROM files"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let res = sqlx::query!("SELECT source_u8, source_checksum FROM files")
+            .fetch_all(&self.pool)
+            .await?;
 
         // Filter out records where both source and source_checksum are None
         Ok(res
             .into_iter()
-            .filter(|r| r.source.is_some() || r.source_checksum.is_some())
+            .filter(|r| r.source_u8.is_some() || r.source_checksum.is_some())
+            .map(|r| {
+                StoreSourceFileChecksum::new(
+                    r.source_u8.map(|f| bytes_to_os_str(f)),
+                    r.source_checksum,
+                )
+            })
             .collect())
     }
 
     async fn get_all_target_checksums(&self) -> Result<Vec<StoreTargetFileChecksum>> {
-        let res = sqlx::query_as!(
-            StoreTargetFileChecksum,
-            "SELECT target, target_checksum FROM files"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(res)
+        let res = sqlx::query!("SELECT target_u8, target_checksum FROM files")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(res
+            .into_iter()
+            .map(|r| StoreTargetFileChecksum::new(bytes_to_os_str(r.target_u8), r.target_checksum))
+            .collect())
     }
 
     // --
@@ -655,18 +730,22 @@ VALUES (?1, ?2)
     // --
     // * Removal & Updates
 
-    async fn cache_phase<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()> {
-        let phase = phase.as_ref();
+    async fn cache_command<S: AsRef<str>>(
+        &self,
+        command: S,
+        data: DeployPhaseStruct,
+    ) -> Result<()> {
+        let command = command.as_ref();
         let data = serde_json::to_string(&data)?;
 
         sqlx::query!(
             r#"
-INSERT INTO phase_cache (phase, data)
+INSERT INTO command_cache (command, data)
 VALUES (?1, ?2)
-ON CONFLICT(phase)
+ON CONFLICT(command)
 DO UPDATE SET data=excluded.data;
             "#,
-            phase,
+            command,
             data,
         )
         .execute(&self.pool)
@@ -675,36 +754,23 @@ DO UPDATE SET data=excluded.data;
         Ok(())
     }
 
-    async fn get_all_cached_tasks<S: AsRef<str>>(&self, phase: S) -> Option<DeployPhaseStruct> {
-        let phase = phase.as_ref();
+    async fn get_cached_commands<S: AsRef<str>>(
+        &self,
+        command: S,
+    ) -> Result<Option<DeployPhaseStruct>> {
+        let command = command.as_ref();
 
-        let data = sqlx::query!("SELECT data FROM phase_cache WHERE phase = ?1", phase)
+        let data = sqlx::query!("SELECT data FROM command_cache WHERE command = ?1", command)
             .fetch_optional(&self.pool)
-            // FIXME 2025-03-23: Handle error?
-            .await.unwrap();
+            .await?;
 
-        // FIXME 2025-03-23: Handle error?
-        data.map(|d| serde_json::from_str(d.data.as_str()).unwrap())
+        if let Some(data) = data {
+            let data = serde_json::from_str(data.data.as_str())?;
+            Ok(data)
+        } else {
+            Ok(None)
+        }
     }
-
-    //     async fn remove_all_removal_tasks<S: AsRef<str>>(&self, module: S) -> Result<()> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         sqlx::query!(
-    //             "DELETE FROM removal WHERE module_id = ?1 AND type = ?2",
-    //             module_id.id,
-    //             "task",
-    //         )
-    //         .execute(&self.pool)
-    //         .await?;
-
-    //         Ok(())
-    //     }
 
     async fn cache_message<S: AsRef<str>>(
         &self,
@@ -782,146 +848,6 @@ VALUES (?1, ?2, ?3)
 
         Ok(())
     }
-
-    // Updates
-
-    //     async fn add_update_task<S: AsRef<str>>(&self, module: S, task: ModuleTask) -> Result<()> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         let task = serde_json::to_string(&task)?;
-
-    //         sqlx::query!(
-    //             r#"
-    // INSERT INTO updates (module_id, type, data)
-    // VALUES (?1, ?2, ?3)
-    //             "#,
-    //             module_id.id,
-    //             "task",
-    //             task,
-    //         )
-    //         .execute(&self.pool)
-    //         .await?;
-
-    //         Ok(())
-    //     }
-
-    //     async fn get_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<ModuleTask>> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         let rows = sqlx::query!(
-    //             "SELECT data FROM updates WHERE module_id = ?1 AND type = ?2",
-    //             module_id.id,
-    //             "task"
-    //         )
-    //         .fetch_all(&self.pool)
-    //         .await?;
-
-    //         Ok(rows
-    //             .into_iter()
-    //             .map(|r| serde_json::from_str(r.data.as_str()))
-    //             .collect::<Result<Vec<_>, _>>()?)
-    //     }
-
-    //     async fn remove_all_update_tasks<S: AsRef<str>>(&self, module: S) -> Result<()> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         sqlx::query!(
-    //             "DELETE FROM updates WHERE module_id = ?1 AND type = ?2",
-    //             module_id.id,
-    //             "task",
-    //         )
-    //         .execute(&self.pool)
-    //         .await?;
-
-    //         Ok(())
-    //     }
-
-    //     async fn add_update_message<S: AsRef<str>>(
-    //         &self,
-    //         message: CommandMessage,
-    //     ) -> Result<()> {
-    //         // let module = module.as_ref();
-    //         let module = &message.module_name;
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         let message = serde_json::to_string(&message)?;
-
-    //         sqlx::query!(
-    //             r#"
-    // INSERT INTO updates (module_id, type, data)
-    // VALUES (?1, ?2, ?3)
-    //             "#,
-    //             module_id.id,
-    //             "message",
-    //             message,
-    //         )
-    //         .execute(&self.pool)
-    //         .await?;
-
-    //         Ok(())
-    //     }
-
-    //     async fn get_all_update_messages<S: AsRef<str>>(
-    //         &self,
-    //         module: S,
-    //     ) -> Result<Vec<CommandMessage>> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         let rows = sqlx::query!(
-    //             "SELECT data FROM updates WHERE module_id = ?1 AND type = ?2",
-    //             module_id.id,
-    //             "message"
-    //         )
-    //         .fetch_all(&self.pool)
-    //         .await?;
-
-    //         Ok(rows
-    //             .into_iter()
-    //             .map(|r| serde_json::from_str(r.data.as_str()))
-    //             .collect::<Result<Vec<_>, _>>()?)
-    //     }
-
-    //     async fn remove_all_update_messages<S: AsRef<str>>(&self, module: S) -> Result<()> {
-    //         let module = module.as_ref();
-
-    //         // Retrieve the ID of the module
-    //         let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-    //             .fetch_one(&self.pool)
-    //             .await?;
-
-    //         sqlx::query!(
-    //             "DELETE FROM updates WHERE module_id = ?1 AND type = ?2",
-    //             module_id.id,
-    //             "message",
-    //         )
-    //         .execute(&self.pool)
-    //         .await?;
-
-    //         Ok(())
-    //     }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -931,7 +857,10 @@ VALUES (?1, ?2, ?3)
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::tests::pm_setup;
+    use crate::{
+        store::{sqlite_files::StoreFileBuilder, sqlite_modules::StoreModuleBuilder},
+        tests::pm_setup,
+    };
     use color_eyre::eyre::eyre;
     use tempfile::tempdir;
 
@@ -948,22 +877,22 @@ pub(crate) mod tests {
         let pool = init_sqlite_store(&config, false, pm).await?;
 
         // Insert a module
-        let test_module = StoreModule::new(
-            "test".to_string(),
-            "/testpath".to_string(),
-            Some("user".to_string()),
-            "manual".to_string(),
-            None,
-            chrono::offset::Utc::now(),
-        );
+        let test_module = StoreModuleBuilder::default()
+            .with_name("test")
+            .with_location("/testpath")
+            .with_user(Some("user".to_string()))
+            .with_reason("manual")
+            .with_depends(None)
+            .with_date(chrono::offset::Utc::now())
+            .build()?;
 
         pool.add_module(&test_module).await?;
 
         for i in 0..5 {
             let local_time = chrono::offset::Utc::now();
-            let test_file = StoreFile::new(
-                "test".to_string(),
-                match op_tye {
+            let test_file = StoreFileBuilder::default()
+                .with_module("test")
+                .with_source(match op_tye {
                     "link" => Some(format!("/dotfiles/foo{}.txt", i)),
                     "copy" => Some(format!("/dotfiles/foo{}.txt", i)),
                     "create" => None,
@@ -972,8 +901,18 @@ pub(crate) mod tests {
                             "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
                         ));
                     }
-                },
-                match op_tye {
+                })
+                .with_source_u8(match op_tye {
+                    "link" => Some(os_str_to_bytes(format!("/dotfiles/foo{}.txt", i))),
+                    "copy" => Some(os_str_to_bytes(format!("/dotfiles/foo{}.txt", i))),
+                    "create" => None,
+                    _ => {
+                        return Err(eyre!(
+                            "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
+                        ));
+                    }
+                })
+                .with_source_checksum(match op_tye {
                     "link" => Some(format!("source_checksum{}", i)),
                     "copy" => Some(format!("source_checksum{}", i)),
                     "create" => None,
@@ -982,10 +921,11 @@ pub(crate) mod tests {
                             "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
                         ));
                     }
-                },
-                format!("/home/foo{}.txt", i),
-                Some(format!("dest_checksum{}", i)),
-                match op_tye {
+                })
+                .with_target(format!("/home/foo{}.txt", i))
+                .with_target_u8(os_str_to_bytes(format!("/home/foo{}.txt", i)))
+                .with_target_checksum(Some(format!("dest_checksum{}", i)))
+                .with_operation(match op_tye {
                     "link" => "link".to_string(),
                     "copy" => "copy".to_string(),
                     "create" => "create".to_string(),
@@ -994,10 +934,10 @@ pub(crate) mod tests {
                             "Invalid 'which' parameter. Must be either 'link', 'copy' or 'create'."
                         ));
                     }
-                },
-                Some("user".to_string()),
-                local_time,
-            );
+                })
+                .with_user(Some("user".to_string()))
+                .with_date(local_time)
+                .build()?;
 
             pool.add_file(test_file).await?;
         }
