@@ -1,17 +1,21 @@
 use crate::cmds::common;
+use crate::config::DotdeployConfig;
+use crate::errors;
+use crate::modules::queue::ModulesQueueBuilder;
 use crate::phases::DeployPhaseStruct;
 use crate::store::Store;
+use crate::store::sqlite::SQLiteStore;
 use crate::utils::FileUtils;
-use crate::{
-    config::DotdeployConfig, modules::queue::ModulesQueueBuilder, store::Stores,
-    utils::sudo::PrivilegeManager,
-};
-use color_eyre::Result;
+use crate::utils::common::bytes_to_os_str;
+use crate::utils::sudo::PrivilegeManager;
 use color_eyre::eyre::WrapErr;
+use color_eyre::{Report, Result};
 use handlebars::Handlebars;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::task::JoinSet;
 use toml::Value;
 use tracing::{debug, error, info, warn};
 
@@ -22,8 +26,8 @@ use tracing::{debug, error, info, warn};
 /// explicitly requested.
 ///
 /// * `modules` - List of modules to remove
-/// * `config` - Application configuration containing removal settings  
-/// * `stores` - Combined user/system store instances to modify
+/// * `config` - Application configuration containing removal settings
+/// * `store` - User store instances to modify
 /// * `context` - Template context for regenerating remaining files
 /// * `handlebars` - Handlebars instance for template processing
 /// * `pm` - Privilege manager for elevated permissions
@@ -37,7 +41,7 @@ use tracing::{debug, error, info, warn};
 pub(crate) async fn remove(
     modules: Vec<String>,
     config: Arc<DotdeployConfig>,
-    stores: Arc<Stores>,
+    store: Arc<SQLiteStore>,
     mut context: HashMap<String, Value>,
     handlebars: Handlebars<'static>,
     pm: Arc<PrivilegeManager>,
@@ -45,18 +49,37 @@ pub(crate) async fn remove(
     // Get module dependencies
     let mut full_modules = HashSet::new();
 
-    for m in modules.iter() {
-        // REVIEW 2025-03-23: Only user store or both?
-        if let Some(st_mod) = stores.user_store.get_module(&m).await? {
-            full_modules.insert(m.clone());
-            if let Some(deps) = st_mod.depends {
-                for d in deps.into_iter() {
-                    full_modules.insert(d);
+    // Recursively collect all dependencies
+    //
+    // This function needs to return a Pin<Box<dyn Future>> because it contains recursive async
+    // calls. The Pin ensures the Future cannot be moved in memory once polled, which is required
+    // for self-referential futures created by async/await. The Box provides the size information at
+    // compile time that would otherwise be impossible to determine due to the recursive nature of
+    // the future chain.
+    fn collect_deps<'a>(
+        module: &'a str,
+        store: &'a SQLiteStore,
+        collected: &'a mut HashSet<String>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if let Some(st_mod) = store.get_module(module).await? {
+                collected.insert(module.to_string());
+                if let Some(deps) = st_mod.depends {
+                    for dep in deps {
+                        if !collected.contains(&dep) {
+                            collect_deps(&dep, store, collected).await?;
+                        }
+                    }
                 }
+            } else {
+                warn!("{} is not deployed", module);
             }
-        } else {
-            warn!("{} is not deployed", &m);
-        }
+            Ok(())
+        })
+    }
+
+    for m in modules.iter() {
+        collect_deps(m, &store, &mut full_modules).await?;
     }
 
     if full_modules.is_empty() {
@@ -66,11 +89,11 @@ pub(crate) async fn remove(
     // Add special module for removal
     full_modules.insert("__dotdeploy_generated".to_string());
 
-    // FIXME 2025-03-24: Maybe merge with above?
+    // Check if a explicitly installed module should be removed as a dependency but was not
+    // explicitly requested by the user
     let mut manual_modules = vec![];
     for m in full_modules.iter() {
-        // REVIEW 2025-03-23: Only user store or both?
-        if let Some(st_mod) = stores.user_store.get_module(&m).await? {
+        if let Some(st_mod) = store.get_module(&m).await? {
             if st_mod.reason.as_str() == "manual" && !modules.contains(&st_mod.name) {
                 manual_modules.push(st_mod.name);
             }
@@ -86,36 +109,73 @@ pub(crate) async fn remove(
         return Ok(false);
     };
 
-    // FIXME 2025-03-23: Update command cache for removal AND update. Remove deleted modules.
-    let mut tasks = if let Some(mut cached_remove_tasks) =
-        stores.user_store.get_cached_commands("remove").await?
+    warn!(
+        "The following modules will be removed:{}",
+        format!(
+            "\n  - {}",
+            full_modules
+                .iter()
+                .filter(|m| *m != "__dotdeploy_generated")
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ),
+    );
+
+    if !(config.force
+        || crate::utils::common::ask_boolean("Do you want to remove these modules? [y/N]?"))
     {
-        cached_remove_tasks
-            .tasks
-            .retain(|t| full_modules.contains(&t.module_name));
-        cached_remove_tasks
-    } else {
-        DeployPhaseStruct {
-            files: vec![],
-            tasks: vec![],
-        }
-    };
+        error!("Aborted");
+        return Ok(false);
+    }
+
+    // FIXME 2025-03-23: Update command cache for removal AND update. Remove deleted modules.
+    let mut tasks =
+        if let Some(mut cached_remove_tasks) = store.get_cached_commands("remove").await? {
+            cached_remove_tasks
+                .tasks
+                .retain(|t| full_modules.contains(&t.module_name));
+            cached_remove_tasks
+        } else {
+            DeployPhaseStruct {
+                files: vec![],
+                tasks: vec![],
+            }
+        };
 
     // Pre hook
     tasks.exec_pre_tasks(&pm, &config).await?;
 
     // Remove packages
     if config.remove_pkg_cmd.is_some() {
-        let mut pkgs = vec![];
-        for m in full_modules.iter() {
-            let mut m_pkgs = stores.get_all_module_packages(m).await?;
-            // Remove packages from store
-            for p in m_pkgs.iter() {
-                stores.remove_package(&m, &p).await?;
-            }
-            pkgs.append(&mut m_pkgs);
+        let mut set = JoinSet::new();
+
+        for m in full_modules.into_iter().filter(|m| m.as_str() != "__dotdeploy_generated") {
+            set.spawn({
+                let store = Arc::clone(&store);
+                async move {
+                    let m_pkgs = store.get_all_module_packages(&m).await?;
+                    // Remove packages from store
+                    for p in m_pkgs.iter() {
+                        store.remove_package(&m, p).await?;
+                    }
+                    Ok::<_, Report>((m, m_pkgs))
+                }
+            });
         }
-        let pkgs = pkgs.into_iter().map(OsString::from).collect::<Vec<_>>();
+        let (modules, pkgs): (HashSet<_>, Vec<_>) = errors::join_errors(set.join_all().await)?
+            .into_iter()
+            .unzip();
+        let pkgs = pkgs
+            .into_iter()
+            .flatten()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        // Reassign the modules
+        full_modules = modules;
+        full_modules.insert("__dotdeploy_generated".to_string());
+
+        // Remove packages
         if !pkgs.is_empty() {
             common::exec_package_cmd(config.remove_pkg_cmd.as_ref().unwrap(), &pkgs, &pm).await?;
         }
@@ -124,25 +184,34 @@ pub(crate) async fn remove(
     // Remove files and restores backups
     let mut files = vec![];
     for m in full_modules.iter() {
-        files.append(&mut stores.get_all_files(m).await?);
+        files.append(&mut store.get_all_files(m).await?);
     }
-    let file_utils = FileUtils::new(Arc::clone(&pm));
+    let file_utils = Arc::new(FileUtils::new(Arc::clone(&pm)));
+
+    let mut set = JoinSet::new();
     for f in files {
-        info!("Removing {}", &f.target);
-        file_utils.delete_file(&f.target).await?;
+        set.spawn({
+            let store = Arc::clone(&store);
+            let file_utils = Arc::clone(&file_utils);
+            async move {
+                let target = PathBuf::from(bytes_to_os_str(f.target_u8));
+                info!("Removing {}", &target.display());
+                file_utils.delete_file(&target).await?;
 
-        debug!("Looking for backup of {} to restore", &f.target);
-        if stores.check_backup_exists(&f.target).await? {
-            debug!("Found backup of {}", &f.target);
-            info!("Restoring backup of {}", &f.target);
-            stores.restore_backup(&f.target, &f.target).await?;
-            stores.remove_backup(&f.target).await?;
-        }
+                if store.check_backup_exists(&target).await? {
+                    store.restore_backup(&target, &target).await?;
+                    store.remove_backup(&target).await?;
+                }
+                Ok(target)
+            }
+        });
+    }
+    let removed_files = errors::join_errors(set.join_all().await)?;
 
-        // Delete potentially empty directories
-        file_utils
-            .delete_parents(&f.target, config.noconfirm)
-            .await?;
+    // NOTE 2025-03-31: This is safer to do sync
+    // Delete potentially empty directories
+    for f in removed_files {
+        file_utils.delete_parents(&f, config.noconfirm).await?;
     }
 
     // Post hook
@@ -150,32 +219,30 @@ pub(crate) async fn remove(
 
     // Drop modules from the store
     for m in full_modules.iter() {
-        stores.remove_module(&m).await?;
+        store.remove_module(&m).await?;
     }
 
     // Update command cache
     for cmd in ["remove", "update"] {
-        let cached_tasks =
-            if let Some(mut cached_tasks) = stores.user_store.get_cached_commands(cmd).await? {
-                cached_tasks
-                    .tasks
-                    .retain(|t| !full_modules.contains(&t.module_name));
-                cached_tasks
-            } else {
-                DeployPhaseStruct {
-                    files: vec![],
-                    tasks: vec![],
-                }
-            };
+        let cached_tasks = if let Some(mut cached_tasks) = store.get_cached_commands(cmd).await? {
+            cached_tasks
+                .tasks
+                .retain(|t| !full_modules.contains(&t.module_name));
+            cached_tasks
+        } else {
+            DeployPhaseStruct {
+                files: vec![],
+                tasks: vec![],
+            }
+        };
 
-        stores.user_store.cache_command(cmd, cached_tasks).await?;
+        store.cache_command(cmd, cached_tasks).await?;
     }
 
     // Update generated files
-    // REVIEW 2025-03-23: Maybe there is a better way to get the required information?
 
     // Queue up left modules
-    let modules_left = stores
+    let modules_left = store
         .get_all_modules()
         .await?
         .into_iter()
@@ -187,18 +254,39 @@ pub(crate) async fn remove(
             .with_modules(modules_left)
             .build(&config)?;
 
+        // Add queued modules to context
+        let module_names = mod_queue.collect_module_names(&mut context);
+
+        // Make queued modules available as the env var DOD_MODULES="mod1,mod2,mod3"
+        unsafe { std::env::set_var("DOD_MODULES", module_names.join(",")) }
+
         mod_queue
             .collect_context(&mut context)
             .wrap_err("Failed to collect context")?;
         mod_queue.finalize(&context, &handlebars)?;
 
-        let (_, _, _, _, _, file_generators, _) = mod_queue.process(Arc::clone(&config)).await?;
+        let (_, _, _, _, _, file_generators, _) = mod_queue
+            .process(Arc::clone(&config), Arc::clone(&store), Arc::clone(&pm))
+            .await?;
 
         debug!("Generating files");
+
+        // Wrap handlebars and context in an Arc as they will be shared across threads
+        let hb = Arc::new(handlebars);
+        let context = Arc::new(context);
+
+        let mut set = JoinSet::new();
         for file in file_generators {
-            file.generate_file(&stores, &context, &handlebars, &config, Arc::clone(&pm))
-                .await?;
+            set.spawn({
+                let store = Arc::clone(&store);
+                let context = Arc::clone(&context);
+                let hb = Arc::clone(&hb);
+                let config = Arc::clone(&config);
+                let pm = Arc::clone(&pm);
+                async move { file.generate_file(&store, &context, &hb, &config, pm).await }
+            });
         }
+        errors::join_errors(set.join_all().await)?;
         debug!("Generating files complete");
     }
 

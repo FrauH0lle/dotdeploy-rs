@@ -1,10 +1,9 @@
 use crate::modules::files::FileOperation;
-use crate::store::Stores;
-use crate::store::sqlite_files::StoreFile;
+use crate::store::Store;
+use crate::store::sqlite::SQLiteStore;
 use crate::store::sqlite_files::StoreFileBuilder;
 use crate::utils::FileUtils;
 use crate::utils::common::os_str_to_bytes;
-use crate::utils::file_fs;
 use crate::utils::file_metadata::FileMetadata;
 use crate::utils::file_permissions;
 use crate::utils::sudo::PrivilegeManager;
@@ -40,7 +39,7 @@ impl PhaseFile {
     pub(crate) async fn deploy(
         &self,
         pm: Arc<PrivilegeManager>,
-        stores: Arc<Stores>,
+        store: Arc<SQLiteStore>,
         context: Arc<HashMap<String, Value>>,
         hb: Arc<Handlebars<'static>>,
     ) -> Result<()> {
@@ -50,7 +49,7 @@ impl PhaseFile {
             FileOperation::Link => "link",
             FileOperation::Create => "create",
         };
-        let prev_operation = match stores.get_file(&self.target).await? {
+        let prev_operation = match store.get_file(&self.target).await? {
             Some(f) => f.operation,
             None => cur_operation.to_string(),
         };
@@ -66,21 +65,19 @@ impl PhaseFile {
             file_utils.delete_file(&self.target).await?;
 
             // Restore backup, if any
-            if stores.check_backup_exists(&self.target).await? {
-                stores.restore_backup(&self.target, &self.target).await?;
+            if store.check_backup_exists(&self.target).await? {
+                store.restore_backup(&self.target, &self.target).await?;
                 // Remove backup
-                stores.remove_backup(&self.target).await?;
+                store.remove_backup(&self.target).await?;
             }
 
             // Remove file from store
-            stores
-                .remove_file(file_fs::path_to_string(&self.target)?)
-                .await?;
+            store.remove_file(&self.target).await?;
         }
         match self.operation {
-            FileOperation::Copy => self.copy(pm, &stores, &context, &hb).await?,
-            FileOperation::Link => self.link(pm, &stores).await?,
-            FileOperation::Create => self.create(pm, &stores, &context, &hb).await?,
+            FileOperation::Copy => self.copy(pm, &store, &context, &hb).await?,
+            FileOperation::Link => self.link(pm, &store).await?,
+            FileOperation::Create => self.create(pm, &store, &context, &hb).await?,
         }
 
         Ok(())
@@ -89,7 +86,7 @@ impl PhaseFile {
     async fn copy(
         &self,
         pm: Arc<PrivilegeManager>,
-        stores: &Stores,
+        store: &SQLiteStore,
         context: &HashMap<String, Value>,
         hb: &Handlebars<'static>,
     ) -> Result<()> {
@@ -100,7 +97,7 @@ impl PhaseFile {
             .expect("A copy file cannot be without source");
 
         let source_file_checksum = Some(file_utils.calculate_sha256_checksum(&source_file).await?);
-        let source_store_checksum = stores
+        let source_store_checksum = store
             .get_source_checksum(&self.target)
             .await?
             .source_checksum;
@@ -109,7 +106,7 @@ impl PhaseFile {
         } else {
             None
         };
-        let target_store_checksum = stores
+        let target_store_checksum = store
             .get_target_checksum(&self.target)
             .await?
             .target_checksum;
@@ -126,12 +123,12 @@ impl PhaseFile {
         }
 
         // Backup file
-        if !stores.check_backup_exists(&self.target).await? {
+        if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
             if file_utils.check_file_exists(&self.target).await? {
-                stores.add_backup(&self.target).await?
+                store.add_backup(&self.target).await?
             } else {
-                stores.add_dummy_backup(&self.target).await?
+                store.add_dummy_backup(&self.target).await?
             }
         }
 
@@ -188,7 +185,7 @@ impl PhaseFile {
             )
             .await?;
 
-        stores
+        store
             .add_file(
                 StoreFileBuilder::default()
                     .with_module(&self.module_name)
@@ -197,7 +194,7 @@ impl PhaseFile {
                     .with_source_checksum(Some(
                         file_utils.calculate_sha256_checksum(&source_file).await?,
                     ))
-                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target(self.target.to_string_lossy().to_string())
                     .with_target_u8(os_str_to_bytes(&self.target))
                     .with_target_checksum(Some(
                         file_utils.calculate_sha256_checksum(&self.target).await?,
@@ -212,7 +209,7 @@ impl PhaseFile {
         Ok(())
     }
 
-    async fn link(&self, pm: Arc<PrivilegeManager>, stores: &Stores) -> Result<()> {
+    async fn link(&self, pm: Arc<PrivilegeManager>, store: &SQLiteStore) -> Result<()> {
         let file_utils = FileUtils::new(pm);
         let source_file = self
             .source
@@ -226,19 +223,19 @@ impl PhaseFile {
             && file_utils
                 .check_link_exists(&self.target, Some(source_file))
                 .await?
-            && stores.check_file_exists(&self.target).await?
+            && store.check_file_exists(&self.target).await?
         {
             debug!("{} deployed and up to date", self.target.display());
             return Ok(());
         }
 
         // Backup file
-        if !stores.check_backup_exists(&self.target).await? {
+        if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
             if file_utils.check_file_exists(&self.target).await? {
-                stores.add_backup(&self.target).await?
+                store.add_backup(&self.target).await?
             } else {
-                stores.add_dummy_backup(&self.target).await?
+                store.add_dummy_backup(&self.target).await?
             }
         }
 
@@ -278,7 +275,7 @@ impl PhaseFile {
             )
             .await?;
 
-        stores
+        store
             .add_file(
                 StoreFileBuilder::default()
                     .with_module(&self.module_name)
@@ -287,7 +284,7 @@ impl PhaseFile {
                     .with_source_checksum(Some(
                         file_utils.calculate_sha256_checksum(&source_file).await?,
                     ))
-                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target(self.target.to_string_lossy().to_string())
                     .with_target_u8(os_str_to_bytes(&self.target))
                     .with_target_checksum(None)
                     .with_operation("link")
@@ -303,7 +300,7 @@ impl PhaseFile {
     async fn create(
         &self,
         pm: Arc<PrivilegeManager>,
-        stores: &Stores,
+        store: &SQLiteStore,
         context: &HashMap<String, Value>,
         hb: &Handlebars<'static>,
     ) -> Result<()> {
@@ -322,12 +319,12 @@ impl PhaseFile {
             .expect("A create file cannot be without content");
 
         // Backup file
-        if !stores.check_backup_exists(&self.target).await? {
+        if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
             if file_utils.check_file_exists(&self.target).await? {
-                stores.add_backup(&self.target).await?
+                store.add_backup(&self.target).await?
             } else {
-                stores.add_dummy_backup(&self.target).await?
+                store.add_dummy_backup(&self.target).await?
             }
         }
 
@@ -376,14 +373,14 @@ impl PhaseFile {
             )
             .await?;
 
-        stores
+        store
             .add_file(
                 StoreFileBuilder::default()
                     .with_module(&self.module_name)
                     .with_source(None)
                     .with_source_u8(None)
                     .with_source_checksum(None)
-                    .with_target(&self.target.to_string_lossy().to_string())
+                    .with_target(self.target.to_string_lossy().to_string())
                     .with_target_u8(os_str_to_bytes(&self.target))
                     .with_target_checksum(Some(
                         file_utils.calculate_sha256_checksum(&self.target).await?,

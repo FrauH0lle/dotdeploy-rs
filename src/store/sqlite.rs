@@ -6,20 +6,18 @@ use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChe
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
 use crate::store::sqlite_modules::StoreModuleBuilder;
-use crate::store::{Store, create_system_dir, create_user_dir};
+use crate::store::{Store, create_user_dir};
+use crate::utils::FileUtils;
 use crate::utils::common::{bytes_to_os_str, os_str_to_bytes};
 use crate::utils::sudo::PrivilegeManager;
-use crate::utils::{FileUtils, file_fs};
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use sqlx::sqlite;
 use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::fs;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 /// Representation of the store database
 #[derive(Clone, Debug)]
@@ -28,8 +26,6 @@ pub(crate) struct SQLiteStore {
     pub(crate) pool: sqlite::SqlitePool,
     /// Store location
     pub(crate) path: PathBuf,
-    /// Indicates whether this is a system-wide store (true) or user-specific store (false)
-    pub(crate) system: bool,
     pub(crate) privilege_manager: Arc<PrivilegeManager>,
 }
 
@@ -39,21 +35,13 @@ impl SQLiteStore {
     /// # Arguments
     /// * `pool` - A [`sqlite::SqlitePool`].
     /// * `path` - The path where the store database will be created.
-    /// * `system` - A boolean indicating whether this is a system-wide store (true) or
-    ///   user-specific store (false).
     ///
     /// # Returns
-    /// A new [`SQLiteStore`] instance with the specified path and system flag.
-    pub(crate) fn new(
-        pool: sqlite::SqlitePool,
-        path: PathBuf,
-        system: bool,
-        pm: Arc<PrivilegeManager>,
-    ) -> Self {
+    /// A new [`SQLiteStore`] instance with the specified path.
+    pub(crate) fn new(pool: sqlite::SqlitePool, path: PathBuf, pm: Arc<PrivilegeManager>) -> Self {
         SQLiteStore {
             pool,
             path,
-            system,
             privilege_manager: pm,
         }
     }
@@ -65,39 +53,26 @@ impl SQLiteStore {
 
 /// Initialize a [`SQLiteStore`].
 ///
-/// This function creates and initializes a SQLite database for storing user or system-wide
-/// dotdeploy data. Depending on the value of `system`, the database is either created in the user's
-/// configuration directory as specified in [`field@DotdeployConfig::user_store_path`] or the
-/// directory specified in [`field@DotdeployConfig::system_store_path`]. After creation, the system
-/// database file permissions are set to be readable and writable by all users (0o666). This is not
-/// the case for the user database.
+/// This function creates and initializes a SQLite database for storing user dotdeploy data. The
+/// database is created in the user's configuration directory as specified in
+/// [`field@DotdeployConfig::user_store_path`].
 ///
 /// # Arguments
 /// * `config` - The DotdeployConfig containing configuration settings including the store path
-/// * `system` - A boolean indicating whether this is a system-wide store (true) or user-specific
-///   store (false).
 ///
 /// # Errors
 /// Returns an error if:
 /// - Directory creation fails
 /// - Database initialization fails
 /// - Connection pool setup fails
-/// - Setting file permissions fails
 pub(crate) async fn init_sqlite_store(
     config: &DotdeployConfig,
-    system: bool,
     pm: Arc<PrivilegeManager>,
 ) -> Result<SQLiteStore> {
     // Create the directory if it doesn't exist
-    let path = match system {
-        true => {
-            create_system_dir(&config.system_store_path, Arc::clone(&pm)).await?;
-            &config.system_store_path
-        }
-        false => {
-            create_user_dir(&config.user_store_path, Arc::clone(&pm)).await?;
-            &config.user_store_path
-        }
+    let path = {
+        create_user_dir(&config.user_store_path, Arc::clone(&pm)).await?;
+        &config.user_store_path
     };
 
     // Create the connection pool
@@ -110,11 +85,7 @@ pub(crate) async fn init_sqlite_store(
         ))?;
 
     // Create a new Store instance and initialize it
-    let store = SQLiteStore::new(pool.0, pool.1, system, pm);
-    if store.is_system() {
-        // Set permissions for the store file to be readable and writable by all users
-        fs::set_permissions(&store.path(), std::fs::Permissions::from_mode(0o666)).await?;
-    }
+    let store = SQLiteStore::new(pool.0, pool.1, pm);
 
     Ok(store)
 }
@@ -136,8 +107,12 @@ pub(crate) async fn init_sqlite_store(
 async fn init_pool(config: &DotdeployConfig, path: &Path) -> Result<(sqlite::SqlitePool, PathBuf)> {
     // Set the full path for the SQLite database file
     let path = path.join("store.sqlite");
+    let database_url = format!(
+        "sqlite://{}",
+        path.to_str()
+            .ok_or_else(|| eyre!("{:?} is not valid UTF-8", path))?
+    );
 
-    let database_url = format!("sqlite://{}", file_fs::path_to_string(&path)?);
     let pool_timeout = std::time::Duration::from_secs(30);
     // We set the number of connections to the number of logical CPUs, with an upper limit of 64
     let max_connections = if config.deploy_sys_files {
@@ -179,10 +154,6 @@ async fn init_pool(config: &DotdeployConfig, path: &Path) -> Result<(sqlite::Sql
 impl Store for SQLiteStore {
     fn path(&self) -> &PathBuf {
         &self.path
-    }
-
-    fn is_system(&self) -> bool {
-        self.system
     }
 
     // --
@@ -277,15 +248,34 @@ impl Store for SQLiteStore {
             .await
             .wrap_err_with(|| format!("Backup not found for {}", file_path.as_ref().display()))?;
 
-        debug!(
-            "Restoring {} backup to {}",
-            file_path.as_ref().display(),
-            to.as_ref().display()
-        );
+        let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
+        file_utils
+            .ensure_dir_exists(
+                &to.as_ref().parent().ok_or_else(|| {
+                    eyre!("Failed to get parent dir of {}", to.as_ref().display())
+                })?,
+            )
+            .await?;
 
         let result = match backup.file_type.as_str() {
-            "link" => self.restore_symlink_backup(&backup, &to).await,
-            "regular" => self.restore_regular_file_backup(&backup, &to).await,
+            "link" => {
+                info!(
+                    "Restoring {} backup to {}",
+                    file_path.as_ref().display(),
+                    to.as_ref().display()
+                );
+
+                self.restore_symlink_backup(&backup, &to).await
+            }
+            "regular" => {
+                info!(
+                    "Restoring {} backup to {}",
+                    file_path.as_ref().display(),
+                    to.as_ref().display()
+                );
+
+                self.restore_regular_file_backup(&backup, &to).await
+            }
             "dummy" => Ok(()),
             invalid => Err(eyre!(
                 "Invalid backup type '{}' for {}",
@@ -296,7 +286,6 @@ impl Store for SQLiteStore {
 
         // Validate checksum for regular files
         if backup.file_type == "regular" {
-            let file_utils = FileUtils::new(Arc::clone(&self.privilege_manager));
             let restored_checksum = file_utils
                 .calculate_sha256_checksum(&to)
                 .await
@@ -500,7 +489,7 @@ DO UPDATE SET
         Ok(())
     }
 
-    async fn remove_file<S: AsRef<str>>(&self, file: S) -> Result<()> {
+    async fn remove_file<P: AsRef<Path>>(&self, file: P) -> Result<()> {
         let file = os_str_to_bytes(file.as_ref());
         sqlx::query!("DELETE FROM files WHERE target_u8 = ?1", file)
             .execute(&self.pool)
@@ -524,8 +513,6 @@ WHERE modules.name = ?1
     }
 
     async fn check_file_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
-        // let path_str = file_fs::path_to_string(path)?;
-        // let store_path = self.path.clone();
         let path_u8 = os_str_to_bytes(path.as_ref());
 
         debug!(
@@ -613,10 +600,7 @@ WHERE modules.name = ?1
             .into_iter()
             .filter(|r| r.source_u8.is_some() || r.source_checksum.is_some())
             .map(|r| {
-                StoreSourceFileChecksum::new(
-                    r.source_u8.map(|f| bytes_to_os_str(f)),
-                    r.source_checksum,
-                )
+                StoreSourceFileChecksum::new(r.source_u8.map(bytes_to_os_str), r.source_checksum)
             })
             .collect())
     }
@@ -679,11 +663,17 @@ VALUES (?1, ?2)
 
     async fn get_all_module_packages<S: AsRef<str>>(&self, module: S) -> Result<Vec<String>> {
         let module = module.as_ref();
-
+        
         // Retrieve the ID of the module
-        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
-            .fetch_one(&self.pool)
-            .await?;
+        let module_id = match sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_optional(&self.pool)
+            .await? {
+                Some(id) => id,
+                None => {
+                    warn!("Module {} not found in store", module);
+                    return Ok(vec![])
+                },
+            };
 
         let rows = sqlx::query!(
             "SELECT name FROM packages WHERE module_id = ?1",
@@ -874,7 +864,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         // Initialize the user store, which sets up the database and tables
-        let pool = init_sqlite_store(&config, false, pm).await?;
+        let pool = init_sqlite_store(&config, pm).await?;
 
         // Insert a module
         let test_module = StoreModuleBuilder::default()

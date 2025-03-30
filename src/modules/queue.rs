@@ -9,8 +9,12 @@ use crate::modules::{DotdeployModule, DotdeployModuleBuilder};
 use crate::phases::DeployPhaseStruct;
 use crate::phases::file::PhaseFileBuilder;
 use crate::phases::task::{PhaseHook, PhaseTask};
+use crate::store::Store;
+use crate::store::sqlite::SQLiteStore;
+use crate::utils::FileUtils;
 use crate::utils::common::bytes_to_os_str;
 use crate::utils::file_fs;
+use crate::utils::sudo::PrivilegeManager;
 use bstr::ByteSlice;
 use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Report, Result, Section};
@@ -22,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 use toml::Value;
+use tracing::info;
 
 /// Represents a queue of modules to be processed for deployment.
 #[derive(Debug)]
@@ -29,6 +34,13 @@ pub(crate) struct ModulesQueue {
     /// A set of modules.
     pub(crate) modules: Vec<DotdeployModule>,
 }
+
+type Phases<'a> = (
+    &'a Arc<Mutex<DeployPhaseStruct>>,
+    &'a Arc<Mutex<DeployPhaseStruct>>,
+    &'a Arc<Mutex<DeployPhaseStruct>>,
+    &'a Arc<Mutex<DeployPhaseStruct>>,
+);
 
 impl ModulesQueue {
     /// Collects module names into the context for template processing
@@ -121,6 +133,8 @@ impl ModulesQueue {
     pub(crate) async fn process(
         &mut self,
         config: Arc<DotdeployConfig>,
+        store: Arc<SQLiteStore>,
+        pm: Arc<PrivilegeManager>,
     ) -> Result<(
         DeployPhaseStruct,
         DeployPhaseStruct,
@@ -158,34 +172,31 @@ impl ModulesQueue {
             let remove_phase = Arc::clone(&remove_phase);
             let seen_files = Arc::clone(&seen_files);
             let config = Arc::clone(&config);
+            let store = Arc::clone(&store);
+            let pm = Arc::clone(&pm);
             let messages = Arc::clone(&messages);
             let file_generators = Arc::clone(&file_generators);
             let packages = Arc::clone(&packages);
 
             set.spawn(async move {
+                let phases: Phases = (&setup_phase, &config_phase, &update_phase, &remove_phase);
+
                 if let Some(files) = module.files.take() {
                     // Process files based on their phase
                     Self::process_files(
                         files,
                         &mut module,
-                        &setup_phase,
-                        &config_phase,
+                        phases,
                         &config,
+                        store,
+                        pm,
                         &seen_files,
                     )
                     .await?;
                 };
 
                 if let Some(tasks) = module.tasks.take() {
-                    Self::process_tasks(
-                        tasks,
-                        &mut module,
-                        &setup_phase,
-                        &config_phase,
-                        &update_phase,
-                        &remove_phase,
-                    )
-                    .await?;
+                    Self::process_tasks(tasks, &mut module, phases).await?;
                 };
 
                 if let Some(module_messages) = module.messages.take() {
@@ -305,12 +316,17 @@ impl ModulesQueue {
     async fn process_files(
         files: Vec<ModuleFile>,
         module: &mut DotdeployModule,
-        setup_phase: &Arc<Mutex<DeployPhaseStruct>>,
-        config_phase: &Arc<Mutex<DeployPhaseStruct>>,
+        phases: Phases<'_>,
         config: &Arc<DotdeployConfig>,
+        store: Arc<SQLiteStore>,
+        pm: Arc<PrivilegeManager>,
         seen_files: &Arc<Mutex<HashSet<PathBuf>>>,
     ) -> Result<()> {
+        let (setup_phase, config_phase, _, _) = phases;
+
         let mut phase_files = vec![];
+        let mut deployed_files = store.get_all_files(&module.name).await?;
+        deployed_files.retain(|f| f.source_u8.is_some());
 
         // Destructure file
         for file in files {
@@ -351,6 +367,9 @@ impl ModulesQueue {
                     )
                 })?;
 
+            // Remove matching files from deployed_files list
+            deployed_files.retain(|f| bytes_to_os_str(&f.target_u8) != target.as_os_str());
+
             // Check that if target is outside of user's HOME directory, deploy_sys_files is true
             if target.starts_with(dirs::home_dir().ok_or_eyre("Failed to get user's HOME dir")?)
                 && !&config.deploy_sys_files
@@ -370,6 +389,16 @@ impl ModulesQueue {
             {
                 // Create PhaseFile for each expanded pair
                 for (expanded_source, expanded_target) in expanded_pairs {
+                    let expanded_target = PathBuf::from(bytes_to_os_str(
+                        &expanded_target
+                            .as_os_str()
+                            .as_bytes()
+                            .replace("##dot##", "."),
+                    ));
+                    // Remove matching files from deployed_files list
+                    deployed_files
+                        .retain(|f| bytes_to_os_str(&f.target_u8) != expanded_target.as_os_str());
+
                     if !seen_files
                         .lock()
                         .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
@@ -418,7 +447,9 @@ impl ModulesQueue {
                     PhaseFileBuilder::default()
                         .with_module_name(&module.name)
                         .with_source(source.as_ref().map(PathBuf::from))
-                        .with_target(&target)
+                        .with_target(PathBuf::from(bytes_to_os_str(
+                            &target.as_os_str().as_bytes().replace("##dot##", "."),
+                        )))
                         .with_content(content)
                         .with_operation(operation)
                         .with_template(template.ok_or_eyre(format!(
@@ -451,6 +482,42 @@ impl ModulesQueue {
                     return Err(eyre!("Invalid phase specified: {:?}", other));
                 }
             }
+        }
+
+        // Remove files which are not part of the module config anymore
+        if !deployed_files.is_empty() {
+            let mut set = JoinSet::new();
+
+            for file in deployed_files {
+                set.spawn({
+                    let file_utils = FileUtils::new(Arc::clone(&pm));
+                    let config = Arc::clone(config);
+                    let store = Arc::clone(&store);
+                    async move {
+                        let target = PathBuf::from(bytes_to_os_str(file.target_u8));
+                        info!(
+                            "{} is not part of the config anymore, removing deployed target",
+                            &target.display()
+                        );
+                        file_utils.delete_file(&target).await?;
+
+                        // Restore backup, if any
+                        if store.check_backup_exists(&target).await? {
+                            store.restore_backup(&target, &target).await?;
+                            // Remove backup
+                            store.remove_backup(&target).await?;
+                        }
+
+                        // Remove file from store
+                        store.remove_file(&target).await?;
+
+                        // Delete potentially empty directories
+                        file_utils.delete_parents(&target, config.noconfirm).await?;
+                        Ok::<_, Report>(())
+                    }
+                });
+            }
+            crate::errors::join_errors(set.join_all().await)?;
         }
         Ok(())
     }
@@ -514,12 +581,7 @@ impl ModulesQueue {
         let mut env = HashMap::new();
         env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
 
-        let expanded = PathBuf::from(bytes_to_os_str(
-            file_fs::expand_path(&target, Some(&env))?
-                .as_os_str()
-                .as_bytes()
-                .replace("##dot##", "."),
-        ));
+        let expanded = file_fs::expand_path(&target, Some(&env))?;
 
         if expanded.starts_with("/") {
             Ok(expanded)
@@ -594,11 +656,10 @@ impl ModulesQueue {
     async fn process_tasks(
         tasks: Vec<ModuleTask>,
         module: &mut DotdeployModule,
-        setup_phase: &Arc<Mutex<DeployPhaseStruct>>,
-        config_phase: &Arc<Mutex<DeployPhaseStruct>>,
-        update_phase: &Arc<Mutex<DeployPhaseStruct>>,
-        remove_phase: &Arc<Mutex<DeployPhaseStruct>>,
+        phases: Phases<'_>,
     ) -> Result<()> {
+        let (setup_phase, config_phase, update_phase, remove_phase) = phases;
+
         for task in tasks {
             let ModuleTask {
                 shell,
@@ -807,8 +868,8 @@ fn expand_wildcards<P: AsRef<Path>>(source: P, target: P) -> Result<Vec<(PathBuf
         .parent()
         .ok_or_else(|| eyre!("Failed to get parent of {}", target.as_ref().display()))?;
 
-    // Read the source directory
-    let entries = std::fs::read_dir(source_parent).wrap_err_with(|| {
+    // Read the source directory recursively
+    let entries = file_fs::read_directory(source_parent).wrap_err_with(|| {
         format!(
             "Failed to read source directory: {}",
             source_parent.display()
@@ -818,20 +879,10 @@ fn expand_wildcards<P: AsRef<Path>>(source: P, target: P) -> Result<Vec<(PathBuf
     // Create expanded pairs
     let mut expanded = Vec::new();
     for entry in entries {
-        let entry = entry.wrap_err("Failed to read directory entry")?;
-        let entry_path = entry.path();
+        let file_name = entry.strip_prefix(source_parent)?.to_owned();
 
-        // Skip directories if needed
-        if entry_path.is_dir() {
-            continue; // Optionally skip directories
-        }
-
-        let file_name = &entry_path
-            .file_name()
-            .ok_or_eyre("Failed to get file name")?;
-
-        let expanded_source = entry_path.to_path_buf();
-        let expanded_target = target_parent.join(&file_name);
+        let expanded_source = entry;
+        let expanded_target = target_parent.join(file_name);
         expanded.push((expanded_source, expanded_target));
     }
 

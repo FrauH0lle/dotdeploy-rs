@@ -127,7 +127,7 @@ pub(crate) fn find_executable_helper(
     let output = find_executable(&executable)
         .map_err(|e| RenderErrorReason::Other(format!("Failed to run is_executable: {e}")))?;
     if !output.is_empty() {
-        out.write(&String::from_utf8_lossy(&output).to_string())?;
+        out.write(String::from_utf8_lossy(&output).as_ref())?;
     }
     // writing anything other than an empty string is considered truthy
 

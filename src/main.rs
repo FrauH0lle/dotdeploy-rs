@@ -1,3 +1,4 @@
+use crate::store::Store;
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use config::DotdeployConfigBuilder;
@@ -8,8 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use toml::Value;
-use tracing::debug;
-use utils::file_fs;
+use tracing::{debug, error};
 
 mod cli;
 mod cmds;
@@ -105,7 +105,7 @@ fn init_config() -> Result<config::DotdeployConfig> {
         .with_dry_run(cli.dry_run)
         .with_force(cli.force)
         .with_noconfirm(cli.noconfirm)
-        .with_config_root(cli.config_root)
+        .with_config_file(cli.config_file)
         .with_dotfiles_root(cli.dotfiles_root)
         .with_modules_root(cli.modules_root)
         .with_hosts_root(cli.hosts_root)
@@ -118,14 +118,13 @@ fn init_config() -> Result<config::DotdeployConfig> {
         .with_remove_pkg_cmd(cli.remove_pkg_cmd)
         .with_skip_pkg_install(cli.skip_pkg_install)
         .with_user_store_path(cli.user_store)
-        .with_system_store_path(cli.system_store)
         .with_logs_dir(cli.logs_dir)
         .with_logs_max(cli.logs_max)
         .build(cli.verbosity)?;
 
     Ok(dotdeploy_config)
 }
- 
+
 /// Make config available as environment variables.
 ///
 /// For nearly all configuration values, a corresponding environment variable will be set.
@@ -161,7 +160,6 @@ fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) -> Result<()> {
             dotdeploy_config.skip_pkg_install.to_string(),
         );
         std::env::set_var("DOD_USER_STORE", &dotdeploy_config.user_store_path);
-        std::env::set_var("DOD_SYSTEM_STORE", &dotdeploy_config.system_store_path);
     }
 
     Ok(())
@@ -184,15 +182,33 @@ fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<S
     let mut context: HashMap<String, Value> = HashMap::new();
     context.insert(
         "DOD_DOTFILES_ROOT".to_string(),
-        Value::String(file_fs::path_to_string(&dotdeploy_config.dotfiles_root)?),
+        Value::String(
+            dotdeploy_config
+                .dotfiles_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.dotfiles_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_MODULES_ROOT".to_string(),
-        Value::String(file_fs::path_to_string(&dotdeploy_config.modules_root)?),
+        Value::String(
+            dotdeploy_config
+                .modules_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.modules_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_HOSTS_ROOT".to_string(),
-        Value::String(file_fs::path_to_string(&dotdeploy_config.hosts_root)?),
+        Value::String(
+            dotdeploy_config
+                .hosts_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.hosts_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_HOSTNAME".to_string(),
@@ -220,13 +236,13 @@ fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<S
     );
     context.insert(
         "DOD_USER_STORE".to_string(),
-        Value::String(file_fs::path_to_string(&dotdeploy_config.user_store_path)?),
-    );
-    context.insert(
-        "DOD_SYSTEM_STORE".to_string(),
-        Value::String(file_fs::path_to_string(
-            &dotdeploy_config.system_store_path,
-        )?),
+        Value::String(
+            dotdeploy_config
+                .user_store_path
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.user_store_path))?
+                .to_string(),
+        ),
     );
 
     Ok(context)
@@ -260,14 +276,14 @@ async fn run(
             .with_channel_rx(Some(rx))
             .build()?,
     );
-    
-    // Initialize stores
-    let stores = Arc::new(
-        store::Stores::new(&config, Arc::clone(&pm))
+
+    // Initialize store
+    let store = Arc::new(
+        store::sqlite::init_sqlite_store(&config, Arc::clone(&pm))
             .await
-            .wrap_err("Failed to initialize stores")?,
+            .wrap_err("Failed to initialize user store")?,
     );
-    debug!(stores = ?stores, "Stores initialized");
+    debug!(store = ?store, "Store initialized");
 
     // --
     // * Initialize handlebars templating
@@ -276,10 +292,22 @@ async fn run(
     handlebars.set_strict_mode(true);
     handlebars_misc_helpers::register(&mut handlebars);
     handlebars.register_helper("contains", Box::new(handlebars_helper::contains_helper));
-    handlebars.register_helper("is_executable", Box::new(handlebars_helper::is_executable_helper));
-    handlebars.register_helper("find_executable", Box::new(handlebars_helper::find_executable_helper));
-    handlebars.register_helper("command_success", Box::new(handlebars_helper::command_success_helper));
-    handlebars.register_helper("command_output", Box::new(handlebars_helper::command_output_helper));
+    handlebars.register_helper(
+        "is_executable",
+        Box::new(handlebars_helper::is_executable_helper),
+    );
+    handlebars.register_helper(
+        "find_executable",
+        Box::new(handlebars_helper::find_executable_helper),
+    );
+    handlebars.register_helper(
+        "command_success",
+        Box::new(handlebars_helper::command_success_helper),
+    );
+    handlebars.register_helper(
+        "command_output",
+        Box::new(handlebars_helper::command_output_helper),
+    );
 
     // Set up the context used by handlebars
     let context = setup_context(&config)?;
@@ -294,68 +322,84 @@ async fn run(
     let cli = cli::get_cli();
 
     let cmd_result = match cli.command {
-        cli::Commands::Deploy { modules } => {
-            let modules = modules.unwrap_or_else(|| {
-                // IF no modules are given, assume host module
-                let host_module = [
-                    config.hosts_root.display().to_string().clone(),
-                    config.hostname.clone(),
-                ]
-                .join(std::path::MAIN_SEPARATOR_STR);
-                vec![host_module]
-            });
+        cli::Commands::Deploy { modules, host } => {
+            let modules = if host {
+                vec![["hosts", config.hostname.as_str()].join("/")]
+            } else if let Some(modules) = modules {
+                modules
+            } else {
+                let mut deployed_modules = store.get_all_modules().await?;
+                if !deployed_modules.is_empty() {
+                    deployed_modules.retain(|m| m.reason.as_str() == "manual");
+                    deployed_modules
+                        .into_iter()
+                        .map(|m| m.name)
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
+            };
+
+            if modules.is_empty() {
+                error!("No modules specified or found in store");
+                return Ok((false, false));
+            }
             cmds::deploy::deploy(
                 modules,
                 config,
-                Arc::clone(&stores),
+                Arc::clone(&store),
                 context,
                 handlebars,
                 Arc::clone(&pm),
             )
             .await
         }
-        cli::Commands::Remove { modules } => {
-            let modules = modules.unwrap_or_else(|| {
-                // IF no modules are given, assume host module
-                let host_module = [
-                    config.hosts_root.display().to_string().clone(),
-                    config.hostname.clone(),
-                ]
-                .join(std::path::MAIN_SEPARATOR_STR);
-                vec![host_module]
-            });
+        cli::Commands::Remove { modules, host } => {
+            let modules = if host {
+                vec![["hosts", config.hostname.as_str()].join("/")]
+            } else if let Some(modules) = modules {
+                modules
+            } else {
+                let deployed_modules = store.get_all_modules().await?;
+                if !deployed_modules.is_empty() {
+                    deployed_modules
+                        .into_iter()
+                        .map(|m| m.name)
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
+            };
+
+            if modules.is_empty() {
+                error!("No modules specified or found in store");
+                return Ok((false, false));
+            }
             cmds::remove::remove(
                 modules,
                 config,
-                Arc::clone(&stores),
+                Arc::clone(&store),
                 context,
                 handlebars,
                 Arc::clone(&pm),
             )
             .await
-        },
-        cli::Commands::Update { modules } => {
-            cmds::update::update(modules, config, Arc::clone(&stores), Arc::clone(&pm)).await
         }
-        cli::Commands::Lookup { file } => {
-            cmds::lookup::lookup(file, Arc::clone(&stores)).await
-        },
-        cli::Commands::Sync { auto } => todo!(),
-        cli::Commands::Validate { diff, fix } => todo!(),
-        cli::Commands::Nuke { really } => todo!(),
+        cli::Commands::Update { modules } => {
+            cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
+        }
+        cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
+        cli::Commands::Sync { auto: _ } => todo!(),
+        cli::Commands::Validate { diff: _, fix: _ } => todo!(),
+        cli::Commands::Nuke { really: _ } => todo!(),
     };
 
     // --
     // * Shutdown
 
     let vacuum = sqlx::query!("VACUUM");
-    vacuum.execute(&stores.user_store.pool).await?;
-    stores.user_store.pool.close().await;
-    if let Some(sys_store) = &stores.system_store {
-        let vacuum = sqlx::query!("VACUUM");
-        vacuum.execute(&sys_store.pool).await?;
-        sys_store.pool.close().await
-    }
+    vacuum.execute(&store.pool).await?;
+    store.pool.close().await;
 
     let loop_running = pm.loop_running.load(Ordering::Relaxed);
     Ok((cmd_result?, loop_running))

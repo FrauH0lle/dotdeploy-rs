@@ -16,81 +16,6 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::warn;
 
-/// Converts a path to a string, handling potential Unicode conversion errors.
-///
-/// This function is useful for operations that require string representations of paths, especially
-/// when interfacing with external commands or APIs that expect strings.
-///
-/// # Arguments
-///
-/// * `path` - Any type that can be converted to a Path.
-///
-/// # Errors
-/// Returns an error if the path contains invalid Unicode characters.
-///
-/// # Examples
-///
-/// ```
-/// use std::path::Path;
-/// let path_str = path_to_string(Path::new("/some/path"))?;
-/// ```
-pub(crate) fn path_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
-    let path_str = path
-        .as_ref()
-        .to_str()
-        .ok_or_else(|| {
-            eyre!(
-                "Filename {:?} contains invalid Unicode characters",
-                path.as_ref()
-            )
-        })?
-        .to_string();
-
-    Ok(path_str)
-}
-
-/// Expands a path string, resolving environment variables and tilde expressions.
-///
-/// This function takes a string slice and expands any environment variables (e.g., $HOME) and tilde
-/// expressions (~) within it.
-///
-/// # Arguments
-///
-/// * `path` - A str
-/// * `env` - Optional HashMap containing environment variable pairs to prepend to the default
-///           environment
-///
-/// # Errors
-///
-/// Returns an error if path contains invalid Unicode or environment variables cannot be expanded.
-pub(crate) fn expand_path_string(
-    path: &str,
-    env: Option<&HashMap<String, String>>,
-) -> Result<String> {
-    let home_dir = || -> Option<String> {
-        let hd = dirs::home_dir()?;
-        path_to_string(hd).ok()
-    };
-
-    // Create variable lookup closure that checks custom env first, then system env
-    let context = |var: &str| -> Result<Option<String>, std::env::VarError> {
-        // Check custom environment variables first
-        if let Some(custom_env) = &env {
-            if let Some(value) = custom_env.get(var) {
-                return Ok(Some(value.clone()));
-            }
-        }
-        // Fall back to system environment variables
-        std::env::var(var).map(Some)
-    };
-
-    // Expand the path using shellexpand with custom context
-    let expanded = shellexpand::full_with_context(path, home_dir, context)
-        .map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
-
-    Ok(expanded.to_string())
-}
-
 /// Expands a path, resolving environment variables and tilde expressions.
 ///
 /// This function takes a path and expands any environment variables (e.g., $HOME) and tilde
@@ -151,7 +76,11 @@ impl FileUtils {
                 // If permission is denied, try using sudo
                 Ok(self
                     .privilege_manager
-                    .sudo_exec_success("test", ["-e", &path_to_string(path)?], None)
+                    .sudo_exec_success(
+                        OsString::from("test"),
+                        [OsString::from("-e"), path.as_ref().into()],
+                        None,
+                    )
                     .await?)
             }
             Err(e) => Err(e)
@@ -196,14 +125,18 @@ impl FileUtils {
                     Some(s) => {
                         if self
                             .privilege_manager
-                            .sudo_exec_success("test", ["-L", &path_to_string(&path)?], None)
+                            .sudo_exec_success(
+                                OsString::from("test"),
+                                [OsString::from("-L"), path.as_ref().into()],
+                                None,
+                            )
                             .await?
                         {
                             let orig = String::from_utf8(
                                 self.privilege_manager
                                     .sudo_exec_output(
-                                        "readlink",
-                                        [path_to_string(&path)?.as_str()],
+                                        OsString::from("readlink"),
+                                        [path.as_ref().into()],
                                         None,
                                     )
                                     .await?
@@ -218,7 +151,11 @@ impl FileUtils {
                     }
                     _ => Ok(self
                         .privilege_manager
-                        .sudo_exec_success("test", ["-L", &path_to_string(&path)?], None)
+                        .sudo_exec_success(
+                            OsString::from("test"),
+                            [OsString::from("-L"), path.as_ref().into()],
+                            None,
+                        )
                         .await?),
                 }
             }
@@ -246,7 +183,11 @@ impl FileUtils {
                 // If permission is denied, use sudo to create the directory
                 Ok(self
                     .privilege_manager
-                    .sudo_exec("mkdir", ["-p", &path_to_string(&path)?], None)
+                    .sudo_exec(
+                        OsString::from("mkdir"),
+                        [OsString::from("-p"), path.as_ref().into()],
+                        None,
+                    )
                     .await?)
             }
             Err(e) => Err(e).wrap_err_with(|| format!("Failed to create {:?}", &path.as_ref()))?,
@@ -286,11 +227,8 @@ impl FileUtils {
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
                 .privilege_manager
                 .sudo_exec(
-                    "cp",
-                    [
-                        path_to_string(&from)?.as_str(),
-                        path_to_string(&to)?.as_str(),
-                    ],
+                    OsString::from("cp"),
+                    [from.as_ref().into(), to.as_ref().into()],
                     Some(&format!(
                         "Copy {} -> {}",
                         &from.as_ref().display(),
@@ -341,8 +279,12 @@ impl FileUtils {
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
                 .privilege_manager
                 .sudo_exec(
-                    "ln",
-                    ["-sf", &path_to_string(&from)?, &path_to_string(&to)?],
+                    OsString::from("ln"),
+                    [
+                        OsString::from("-sf"),
+                        from.as_ref().into(),
+                        to.as_ref().into(),
+                    ],
                     Some(&format!(
                         "Link {} -> {}",
                         &from.as_ref().display(),
@@ -377,7 +319,11 @@ impl FileUtils {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(self
                 .privilege_manager
-                .sudo_exec("rm", ["-f", &path_to_string(&path)?], None)
+                .sudo_exec(
+                    OsString::from("rm"),
+                    [OsString::from("-f"), path.as_ref().into()],
+                    None,
+                )
                 .await?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 warn!("{}: {}", path.as_ref().display(), e);
@@ -415,12 +361,16 @@ impl FileUtils {
                     .unwrap_or(false),
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     // If permission is denied, use sudo to check if the directory is empty
-                    let path_str = path_to_string(path)?;
                     let output = self
                         .privilege_manager
                         .sudo_exec_output(
-                            "find",
-                            [path_str.as_str(), "-maxdepth", "0", "-empty"],
+                            OsString::from("find"),
+                            [
+                                path.into(),
+                                OsString::from("-maxdepth"),
+                                OsString::from("0"),
+                                OsString::from("-empty"),
+                            ],
                             None,
                         )
                         .await?;
@@ -429,7 +379,7 @@ impl FileUtils {
                     } else {
                         return Err(eyre!(
                             "Failed to check if directory {} is empty: {}",
-                            path_str,
+                            path.to_string_lossy(),
                             String::from_utf8(output.stderr)?
                         ));
                     }
@@ -451,7 +401,7 @@ impl FileUtils {
                     Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                         // If permission is denied, use sudo to remove the directory
                         self.privilege_manager
-                            .sudo_exec("rmdir", [path_to_string(path)?.as_str()], None)
+                            .sudo_exec(OsString::from("rmdir"), [path.into()], None)
                             .await?
                     }
                     Err(e) => {
@@ -507,30 +457,12 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_path_to_string() -> Result<()> {
-        assert_eq!(
-            path_to_string(PathBuf::from("/foo/bar.txt"))?,
-            "/foo/bar.txt".to_string()
-        );
-        assert_eq!(
-            path_to_string(Path::new("/foo/bar.txt"))?,
-            "/foo/bar.txt".to_string()
-        );
-        // Test for invalid unicode character, adapted from
-        // https://github.com/rust-lang/cargo/pull/9226/files#diff-9977238c61100eb9f319febd88e2434b304ac401f0da3b50d00d7c91de319e2fR2957-R2966
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
-        assert!(path_to_string(PathBuf::from(OsString::from_vec(vec![255]))).is_err());
-        Ok(())
-    }
-
-    #[test]
     fn test_expand_path() -> Result<()> {
         // Test with tilde expansion
         let home = dirs::home_dir().ok_or_eyre("Failed to get HOME dir")?;
         assert_eq!(
             expand_path::<&str, &str>("~/test.txt", None)?,
-            PathBuf::from(format!("{}/test.txt", path_to_string(home)?))
+            PathBuf::from(format!("{}/test.txt", home.to_str().ok_or_eyre("Invalid UTF-8")?))
         );
 
         // Test with environment variable
@@ -547,7 +479,7 @@ mod tests {
         env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
         assert_eq!(
             expand_path("~/dir/$TEST_DIR/file.txt", Some(&env))?,
-            PathBuf::from(format!("{}/dir/tmp/test/file.txt", path_to_string(home)?))
+            PathBuf::from(format!("{}/dir/tmp/test/file.txt", home.to_str().ok_or_eyre("Invalid UTF-8")?))
         );
 
         // Test with absolute path (no expansion needed)
@@ -559,7 +491,10 @@ mod tests {
         // Test with invalid UTF-8
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
-        assert!(expand_path::<PathBuf, &str>(PathBuf::from(OsString::from_vec(vec![255])), None).is_err());
+        assert!(
+            expand_path::<PathBuf, &str>(PathBuf::from(OsString::from_vec(vec![255])), None)
+                .is_err()
+        );
 
         Ok(())
     }

@@ -1,23 +1,24 @@
-use crate::store::Stores;
+use crate::store::sqlite::SQLiteStore;
+use crate::store::Store;
 use crate::utils::common::bytes_to_os_str;
 use color_eyre::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Lookup a file path in the dotdeploy stores and resolve to its source path
+/// Lookup a file path in the dotdeploy store and resolve to its source path
 ///
-/// Queries both user and system stores to find the original source path for a given target file.
-/// When found, resolves to the stored source path. When not found, returns the original input path.
+/// Queries user store to find the original source path for a given target file. When found,
+/// resolves to the stored source path. When not found, returns the original input path.
 ///
 /// * `file` - Target file path to look up in the stores
-/// * `stores` - Combined user/system store instances to search
+/// * `store` - User store instances to search
 ///
 /// # Errors
 /// Returns errors if:
 /// * Store database access fails
 /// * Path byte conversion fails
-pub(crate) async fn lookup(file: PathBuf, stores: Arc<Stores>) -> Result<bool> {
-    let res_file = stores
+pub(crate) async fn lookup(file: PathBuf, store: Arc<SQLiteStore>) -> Result<bool> {
+    let res_file = store
         .get_file(&file)
         .await?
         .and_then(|st_file| st_file.source_u8)

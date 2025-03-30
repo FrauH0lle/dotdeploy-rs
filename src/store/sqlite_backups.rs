@@ -84,7 +84,7 @@ impl SQLiteStore {
                     .as_ref()
                     .map(|s| s.to_string_lossy().to_string()),
             )
-            .with_link_source_u8(metadata.symlink_source.as_ref().map(|s| os_str_to_bytes(s)))
+            .with_link_source_u8(metadata.symlink_source.as_ref().map(os_str_to_bytes))
             .with_owner(format!("{}:{}", user_id, group_id))
             .with_permissions(None)
             .with_checksum(None)

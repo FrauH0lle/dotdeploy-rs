@@ -28,8 +28,8 @@ pub(crate) struct Cli {
     pub(crate) force: Option<bool>,
 
     /// Dotdeploy config folder
-    #[clap(long, action, env = "DOD_CONFIG_ROOT")]
-    pub(crate) config_root: Option<PathBuf>,
+    #[clap(long, action, env = "DOD_CONFIG_FILE")]
+    pub(crate) config_file: Option<PathBuf>,
 
     /// Root folder of dotfiles
     #[clap(long, action, env = "DOD_DOTFILES_ROOT")]
@@ -83,10 +83,6 @@ pub(crate) struct Cli {
     #[clap(long, action, env = "DOD_USER_STORE")]
     pub(crate) user_store: Option<PathBuf>,
 
-    /// Directory of the system store
-    #[clap(long, action, env = "DOD_SYSTEM_STORE")]
-    pub(crate) system_store: Option<PathBuf>,
-
     /// Verbosity level (-v = debug, -vv = trace)
     #[clap(
         short,
@@ -112,12 +108,18 @@ pub(crate) enum Commands {
     Deploy {
         /// Optional list of module names to deploy
         modules: Option<Vec<String>>,
+        /// Deploy the host module
+        #[clap(long)]
+        host: bool,
     },
 
     /// Remove deployed modules and restore backups
     Remove {
         /// Optional list of module names to remove
         modules: Option<Vec<String>>,
+        /// Remove the host module
+        #[clap(long)]
+        host: bool,
     },
 
     /// Update module content

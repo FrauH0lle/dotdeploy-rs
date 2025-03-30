@@ -1,4 +1,4 @@
-depends_on = ["test2", "test3"]
+depends_on = ["test2"]
 
 # Files to deploy
 # 'target' must not be empty.
@@ -82,6 +82,10 @@ on_command = "remove"
 # message = "Hello there :) from update"
 # on_command = "update"
 
+[[tasks]]
+shell = "echo $DOD_MODULES"
+if = "(eq DOD_DISTRIBUTION_NAME 'fdora')"
+
 [[messages]]
 message = "Hello there :) from update 2"
 on_command = "update"
@@ -110,7 +114,7 @@ prepend = "Pretty cool"
 append = "And done"
 
 # [[packages]]
-# # install = ["cowsay"]
+# install = ["cowsay"]
 # install = ["lolcat"]
 
 [context_vars]

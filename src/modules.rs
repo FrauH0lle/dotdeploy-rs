@@ -1,15 +1,17 @@
 use crate::config::DotdeployConfig;
-use crate::modules::files::ModuleFile;
 use crate::modules::files::FileOperation;
+use crate::modules::files::ModuleFile;
 use crate::modules::generate_file::Generate;
 use crate::modules::messages::ModuleMessage;
 use crate::modules::tasks::ModuleTask;
+use crate::utils::file_fs;
 use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Result, Section};
 use handlebars::Handlebars;
 use packages::ModulePackages;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use toml::Value;
@@ -31,6 +33,8 @@ pub(crate) struct DotdeployModule {
     pub(crate) reason: String,
     /// Module dependencies
     pub(crate) depends_on: Option<Vec<String>>,
+    /// Other config TOML files to include
+    pub(crate) includes: Option<Vec<PathBuf>>,
     /// Files to be managed by this module
     pub(crate) files: Option<Vec<ModuleFile>>,
     /// Tasks to be executed by this module
@@ -137,9 +141,9 @@ impl DotdeployModule {
                     let command_display = match (&task.shell, &task.exec) {
                         (Some(shell), _) => shell,
                         (_, Some(exec)) => exec,
-                        _ => &OsString::from("<unknown>")  // This shouldn't happen due to the condition above
+                        _ => &OsString::from("<unknown>"), // This shouldn't happen due to the condition above
                     };
- 
+
                     return Err(eyre!(
                         "{}:command={}\n A task can be either a shell command OR an executable",
                         &self.location.display(),
@@ -190,6 +194,7 @@ pub(crate) struct DotdeployModuleBuilder {
     __location__: Option<PathBuf>,
     __reason__: Option<PathBuf>,
     depends_on: Option<Vec<String>>,
+    includes: Option<Vec<PathBuf>>,
     files: Option<Vec<ModuleFile>>,
     tasks: Option<Vec<ModuleTask>>,
     messages: Option<Vec<ModuleMessage>>,
@@ -226,7 +231,7 @@ impl DotdeployModuleBuilder {
     /// # Errors
     /// Returns an error if required fields (name/location) are missing
     pub(crate) fn build(&mut self, reason: String) -> Result<DotdeployModule> {
-        Ok(DotdeployModule {
+        let mut module = DotdeployModule {
             name: Clone::clone(self.__name__.as_ref().ok_or_eyre("Empty 'name' field")?),
             location: Clone::clone(
                 self.__location__
@@ -235,13 +240,93 @@ impl DotdeployModuleBuilder {
             ),
             reason,
             depends_on: self.depends_on.take(),
+            includes: self.includes.take(),
             files: self.files.take(),
             tasks: self.tasks.take(),
             messages: self.messages.take(),
             generators: self.generators.take(),
             packages: self.packages.take(),
             context_vars: self.context_vars.take(),
-        })
+        };
+
+        if let Some(ref includes) = module.includes {
+            for include_path in includes {
+                // Make the current module location available as an env var
+                let mut env = HashMap::new();
+                env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
+
+                let mut expanded = file_fs::expand_path(include_path, Some(&env))?;
+
+                // If the path start with '/' we assume it is absolute
+                if !expanded.starts_with("/") {
+                    // Otherwise, expand it relative to the current module directory
+                    let mut path = PathBuf::from(&module.location);
+                    path.push(expanded);
+                    expanded = path
+                }
+
+                let include_content = std::fs::read_to_string(&expanded).wrap_err_with(|| {
+                    format!("Failed to read include file: {}", expanded.display())
+                })?;
+
+                let included_config: DotdeployModuleBuilder = toml::from_str(&include_content)
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to parse included config from: {}",
+                            include_path.display()
+                        )
+                    })?;
+
+                // Replace any existing files with same target from included config
+                if let Some(files) = included_config.files {
+                    if let Some(ref mut module_files) = module.files {
+                        // Remove any files that have matching targets in the included files
+                        let included_targets =
+                            files.iter().map(|f| &f.target).collect::<HashSet<_>>();
+                        module_files.retain(|f| !included_targets.contains(&f.target));
+
+                        // Add all files from included config
+                        module_files.extend(files);
+                    }
+                }
+
+                // Merge other fields by extending 
+                if let Some(included_tasks) = included_config.tasks {
+                    module
+                        .tasks
+                        .get_or_insert_with(Vec::new)
+                        .extend(included_tasks);
+                }
+                if let Some(included_messages) = included_config.messages {
+                    module
+                        .messages
+                        .get_or_insert_with(Vec::new)
+                        .extend(included_messages);
+                }
+                if let Some(included_generators) = included_config.generators {
+                    module
+                        .generators
+                        .get_or_insert_with(Vec::new)
+                        .extend(included_generators);
+                }
+                if let Some(included_packages) = included_config.packages {
+                    module
+                        .packages
+                        .get_or_insert_with(Vec::new)
+                        .extend(included_packages);
+                }
+
+                // Merge HashMap by inserting (overwriting duplicates)
+                if let Some(included_vars) = included_config.context_vars {
+                    module
+                        .context_vars
+                        .get_or_insert_with(HashMap::new)
+                        .extend(included_vars);
+                }
+            }
+        }
+
+        Ok(module)
     }
 }
 
@@ -332,7 +417,7 @@ fn default_option_bool() -> Option<bool> {
 fn default_phase_hook() -> Option<String> {
     Some("post".to_string())
 }
- 
+
 /// Provides default message display_when value ("deploy").
 fn default_on_command() -> Option<String> {
     Some("deploy".to_string())

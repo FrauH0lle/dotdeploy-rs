@@ -5,9 +5,9 @@
 //! files that might require higher permissions.
 
 use crate::utils::FileUtils;
-use crate::utils::file_fs;
 use crate::utils::file_permissions;
 use color_eyre::{Result, eyre::WrapErr};
+use std::ffi::OsString;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -64,16 +64,15 @@ impl FileUtils {
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 // If permission is denied, create a temporary copy with elevated privileges
                 let temp_file = tempfile::NamedTempFile::new()?;
-                let temp_path_str = file_fs::path_to_string(&temp_file)?;
 
                 self.privilege_manager
                     .sudo_exec(
-                        "cp",
+                        OsString::from("cp"),
                         [
-                            "--preserve",
-                            "--no-dereference",
-                            &file_fs::path_to_string(&path)?,
-                            &temp_path_str,
+                            OsString::from("--preserve"),
+                            OsString::from("--no-dereference"),
+                            path.as_ref().into(),
+                            temp_file.path().into(),
                         ],
                         Some(
                             format!(
@@ -157,10 +156,10 @@ impl FileUtils {
                     // Use sudo to set permissions if permission is denied
                     self.privilege_manager
                         .sudo_exec(
-                            "chmod",
+                            OsString::from("chmod"),
                             [
-                                file_permissions::perms_int_to_str(permissions)?.as_str(),
-                                file_fs::path_to_string(&path)?.as_str(),
+                                OsString::from(file_permissions::perms_int_to_str(permissions)?),
+                                path.as_ref().into(),
                             ],
                             None,
                         )
@@ -179,10 +178,10 @@ impl FileUtils {
                     // Use sudo to set ownership if permission is denied
                     self.privilege_manager
                         .sudo_exec(
-                            "chown",
+                            OsString::from("chown"),
                             [
-                                format!("{}:{}", uid, gid).as_str(),
-                                &file_fs::path_to_string(&path)?,
+                                OsString::from(format!("{}:{}", uid, gid)),
+                                path.as_ref().into(),
                             ],
                             None,
                         )

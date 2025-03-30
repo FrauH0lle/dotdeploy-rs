@@ -95,6 +95,7 @@ where
         // Read chunk from input stream
         match reader.read(&mut chunk).await {
             Ok(0) => {
+                writer.flush().await.ok();
                 // End of stream reached
                 break;
             }
@@ -105,6 +106,7 @@ where
                 // Write data to output stream immediately
                 writer.write_all(data).await.ok();
 
+                writer.flush().await.ok();
                 // Store captured data in buffer
                 buffer.extend_from_slice(data);
             }

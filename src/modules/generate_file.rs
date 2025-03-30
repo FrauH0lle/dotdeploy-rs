@@ -1,12 +1,13 @@
 use tracing::debug;
 use crate::config::DotdeployConfig;
 use crate::modules::{ConditionEvaluator, ConditionalComponent};
+use crate::store::sqlite::SQLiteStore;
 use tracing::error;
-use crate::store::Stores;
+use crate::store::Store;
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
 use crate::utils::sudo::PrivilegeManager;
-use crate::utils::{FileUtils, file_fs};
+use crate::utils::FileUtils;
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::Result;
 use handlebars::Handlebars;
@@ -67,14 +68,14 @@ impl ConditionalComponent for Generate {
 impl Generate {
     pub(crate) async fn generate_file(
         &self,
-        stores: &Stores,
+        store: &SQLiteStore,
         context: &HashMap<String, Value>,
         hb: &Handlebars<'static>,
         config: &DotdeployConfig,
         pm: Arc<PrivilegeManager>,
     ) -> Result<()> {
         // Retrieve all modules from the store
-        let modules = stores.get_all_modules().await?;
+        let modules = store.get_all_modules().await?;
         // FIXME 2025-03-20: There needs to be a better way
 
         // NOTE 2025-03-22: I guess either create a clone of the context map or use a mutex... but
@@ -150,12 +151,12 @@ impl Generate {
                 .parent()
                 .ok_or_else(|| eyre!("Could not get parent of {}", &self.target.display()))?;
             // Backup file
-            if !stores.check_backup_exists(&self.target).await? {
+            if !store.check_backup_exists(&self.target).await? {
                 debug!("Creating backup of {}", &self.target.display());
                 if file_utils.check_file_exists(&self.target).await? {
-                    stores.add_backup(&self.target).await?
+                    store.add_backup(&self.target).await?
                 } else {
-                    stores.add_dummy_backup(&self.target).await?
+                    store.add_dummy_backup(&self.target).await?
                 }
             }
 
@@ -163,7 +164,7 @@ impl Generate {
             fs::write(&self.target, content).await?;
 
             // Add a special module entry for generated content
-            stores
+            store
                 .add_module(&StoreModule {
                     name: "__dotdeploy_generated".to_string(),
                     location: config.modules_root.to_string_lossy().to_string(),
@@ -176,13 +177,13 @@ impl Generate {
                 .await?;
 
             // Add the generated file to the store
-            stores
+            store
                 .add_file(StoreFile {
                     module: "__dotdeploy_generated".to_string(),
                     source: None,
                     source_u8: None,
                     source_checksum: None,
-                    target: file_fs::path_to_string(&self.target)?,
+                    target: self.target.to_string_lossy().to_string(),
                     target_u8:os_str_to_bytes(&self.target),
                     target_checksum: None,
                     operation: "generate".to_string(),

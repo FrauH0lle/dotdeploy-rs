@@ -69,14 +69,14 @@ mod tests {
         assert_eq!(
             result,
             StoreTargetFileChecksum::new(
-                "/home/foo3.txt".to_string(),
+                "/home/foo3.txt",
                 Some("dest_checksum3".to_string())
             )
         );
         let result = store.get_target_checksum("/does/not/exist.txt").await?;
         assert_eq!(
             result,
-            StoreTargetFileChecksum::new("/does/not/exist.txt".to_string(), None)
+            StoreTargetFileChecksum::new("/does/not/exist.txt", None)
         );
 
         // Source file and source checksum missing

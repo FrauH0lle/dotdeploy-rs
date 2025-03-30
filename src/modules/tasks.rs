@@ -15,9 +15,11 @@ struct ModuleTaskIntermediate {
     expand_args: Option<bool>,
     #[serde(default = "default_option_bool")]
     sudo: Option<bool>,
+    #[serde(default)]
     phase: DeployPhase,
     #[serde(default = "default_phase_hook")]
     hook: Option<String>,
+    #[serde(rename = "if")]
     condition: Option<String>,
 }
 

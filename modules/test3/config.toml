@@ -1,3 +1,8 @@
+includes = [
+"skata.toml",
+"foo.toml"
+]
+
 [[messages]]
 message = """
 Hello there from test3
@@ -8,6 +13,7 @@ Hello there from test3
 source = "dot-foo-dir/*"
 target = "$HOME/dot-foo-dir/*"
 type = "link"
+# type = "copy"
 
 # [[files]]
 # source = "dot-foo-dir/dot-foo-dir1.txt"

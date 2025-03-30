@@ -35,7 +35,6 @@ use std::path::{Path, PathBuf};
 /// - `hosts_root`: `"~/.dotfiles/hosts/"` - Root folder for host declarations
 /// - `user_store_path`: `"$XDG_DATA_HOME/dotdeploy"` or `"~/.local/share/dotdeploy"` - User store
 ///   location
-/// - `system_store_path`: `"/var/lib/dotdeploy"` - System-wide store location
 /// - `logs_dir`: `"$XDG_DATA_HOME/dotdeploy/logs"` - Directory for log files
 ///
 /// ## System Detection
@@ -73,7 +72,7 @@ pub(crate) struct DotdeployConfig {
     pub(crate) noconfirm: bool,
     /// Root folder of config.
     #[allow(dead_code)]
-    pub(crate) config_root: PathBuf,
+    pub(crate) config_file: PathBuf,
     /// Root folder of dotfiles.
     pub(crate) dotfiles_root: PathBuf,
     /// Root folder of Dotedeploy modules. This path stores the module declarations.
@@ -98,8 +97,6 @@ pub(crate) struct DotdeployConfig {
     pub(crate) skip_pkg_install: bool,
     /// Directory of the user store
     pub(crate) user_store_path: PathBuf,
-    /// Directory of the system store
-    pub(crate) system_store_path: PathBuf,
     /// Directory of the log files
     pub(crate) logs_dir: PathBuf,
     /// Maximum number of log files to retain
@@ -112,11 +109,35 @@ pub(crate) struct DotdeployConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct DotdeployConfigBuilderIntermediate {
+    pub(crate) dry_run: Option<bool>,
+    pub(crate) force: Option<bool>,
+    pub(crate) noconfirm: Option<bool>,
+    pub(crate) config_file: Option<PathBuf>,
+    pub(crate) dotfiles_root: Option<PathBuf>,
+    pub(crate) modules_root: Option<PathBuf>,
+    pub(crate) hosts_root: Option<PathBuf>,
+    pub(crate) hostname: Option<String>,
+    pub(crate) distribution: Option<String>,
+    pub(crate) use_sudo: Option<bool>,
+    pub(crate) sudo_cmd: Option<String>,
+    pub(crate) deploy_sys_files: Option<bool>,
+    pub(crate) install_pkg_cmd: Option<Vec<String>>,
+    pub(crate) remove_pkg_cmd: Option<Vec<String>>,
+    pub(crate) skip_pkg_install: Option<bool>,
+    pub(crate) user_store_path: Option<PathBuf>,
+    pub(crate) logs_dir: Option<PathBuf>,
+    pub(crate) logs_max: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(from = "DotdeployConfigBuilderIntermediate")]
 pub(crate) struct DotdeployConfigBuilder {
     pub(crate) dry_run: Option<bool>,
     pub(crate) force: Option<bool>,
     pub(crate) noconfirm: Option<bool>,
-    pub(crate) config_root: Option<PathBuf>,
+    pub(crate) config_file: Option<PathBuf>,
     pub(crate) dotfiles_root: Option<PathBuf>,
     pub(crate) modules_root: Option<PathBuf>,
     pub(crate) hosts_root: Option<PathBuf>,
@@ -129,9 +150,37 @@ pub(crate) struct DotdeployConfigBuilder {
     pub(crate) remove_pkg_cmd: Option<Vec<OsString>>,
     pub(crate) skip_pkg_install: Option<bool>,
     pub(crate) user_store_path: Option<PathBuf>,
-    pub(crate) system_store_path: Option<PathBuf>,
     pub(crate) logs_dir: Option<PathBuf>,
     pub(crate) logs_max: Option<usize>,
+}
+
+impl From<DotdeployConfigBuilderIntermediate> for DotdeployConfigBuilder {
+    fn from(intermediate: DotdeployConfigBuilderIntermediate) -> Self {
+        Self {
+            dry_run: intermediate.dry_run,
+            force: intermediate.force,
+            noconfirm: intermediate.noconfirm,
+            config_file: intermediate.config_file,
+            dotfiles_root: intermediate.dotfiles_root,
+            modules_root: intermediate.modules_root,
+            hosts_root: intermediate.hosts_root,
+            hostname: intermediate.hostname,
+            distribution: intermediate.distribution,
+            use_sudo: intermediate.use_sudo,
+            sudo_cmd: intermediate.sudo_cmd,
+            deploy_sys_files: intermediate.deploy_sys_files,
+            install_pkg_cmd: intermediate
+                .install_pkg_cmd
+                .map(|v| v.into_iter().map(OsString::from).collect()),
+            remove_pkg_cmd: intermediate
+                .remove_pkg_cmd
+                .map(|v| v.into_iter().map(OsString::from).collect()),
+            skip_pkg_install: intermediate.skip_pkg_install,
+            user_store_path: intermediate.user_store_path,
+            logs_dir: intermediate.logs_dir,
+            logs_max: intermediate.logs_max,
+        }
+    }
 }
 
 impl DotdeployConfigBuilder {
@@ -156,9 +205,9 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    pub(crate) fn with_config_root(&mut self, config_root: Option<PathBuf>) -> &mut Self {
+    pub(crate) fn with_config_file(&mut self, config_file: Option<PathBuf>) -> &mut Self {
         let new = self;
-        new.config_root = config_root;
+        new.config_file = config_file;
         new
     }
 
@@ -240,15 +289,6 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    pub(crate) fn with_system_store_path(
-        &mut self,
-        system_store_path: Option<PathBuf>,
-    ) -> &mut Self {
-        let new = self;
-        new.system_store_path = system_store_path;
-        new
-    }
-
     pub(crate) fn with_logs_dir(&mut self, logs_dir: Option<PathBuf>) -> &mut Self {
         let new = self;
         new.logs_dir = logs_dir;
@@ -261,20 +301,23 @@ impl DotdeployConfigBuilder {
         new
     }
 
-    /// Builds the path to the dotdeploy config file based on environment variables.
+    /// Reads and returns the contents of a configuration file.
     ///
-    /// Checks `XDG_CONFIG_HOME` first and then `HOME`. Returns the path to the config file as a
-    /// `String`.
+    /// Takes a path to a TOML configuration file and returns its contents as a string. This is a
+    /// helper method used during the build process to load configuration from disk.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the configuration file to read
     ///
     /// # Errors
-    /// Returns an error if reading the config file fails.
+    /// Returns an error if:
+    /// * The file cannot be read
+    /// * The file path is invalid
+    /// * Permission is denied
     fn read_config_file(&self, path: &Path) -> Result<String> {
-        // Construct the full path to the config file
-        let config_file: PathBuf = path.join("config.toml");
-
         // Read and return the contents of the config file
-        let config_file_content: String = std::fs::read_to_string(&config_file)
-            .wrap_err_with(|| format!("Failed to read config from {}", config_file.display()))?;
+        let config_file_content: String = std::fs::read_to_string(&path)
+            .wrap_err_with(|| format!("Failed to read config from {}", path.display()))?;
 
         Ok(config_file_content)
     }
@@ -290,9 +333,9 @@ impl DotdeployConfigBuilder {
     {
         match value {
             Some(path) => crate::utils::file_fs::expand_path::<&PathBuf, &str>(path, None),
-            None => parsed_value
-                .as_ref()
-                .map_or_else(default_fn, |p| crate::utils::file_fs::expand_path::<&PathBuf, &str>(p, None)),
+            None => parsed_value.as_ref().map_or_else(default_fn, |p| {
+                crate::utils::file_fs::expand_path::<&PathBuf, &str>(p, None)
+            }),
         }
     }
 
@@ -307,10 +350,13 @@ impl DotdeployConfigBuilder {
     /// distribution if not explicitly set.
     pub(crate) fn build(&self, verbosity: u8) -> Result<DotdeployConfig> {
         // Determine the config file path based on environment variables
-        let config_file_path = if let Some(ref path) = self.config_root {
+        let config_file_path = if let Some(ref path) = self.config_file {
             Clone::clone(path)
         } else {
-            dirs::config_dir().ok_or_eyre("Could not determine user's config directory")?
+            dirs::config_dir()
+                .ok_or_eyre("Could not determine user's config directory")?
+                .join("dotdeploy")
+                .join("config.toml")
         };
 
         // Try to read config file, use empty string if not found
@@ -330,7 +376,6 @@ impl DotdeployConfigBuilder {
         const DEFAULT_DOTFILES_DIR: &str = "~/.dotfiles";
         const DEFAULT_MODULES_DIR: &str = "modules";
         const DEFAULT_HOSTS_DIR: &str = "hosts";
-        const DEFAULT_SYSTEM_STORE: &str = "/var/lib/dotdeploy";
 
         let dotfiles_root =
             Self::expand_config_path(&self.dotfiles_root, &parsed_data.dotfiles_root, || {
@@ -339,12 +384,18 @@ impl DotdeployConfigBuilder {
 
         let modules_root =
             Self::expand_config_path(&self.modules_root, &parsed_data.modules_root, || {
-                crate::utils::file_fs::expand_path::<PathBuf, &str>(dotfiles_root.join(DEFAULT_MODULES_DIR), None)
+                crate::utils::file_fs::expand_path::<PathBuf, &str>(
+                    dotfiles_root.join(DEFAULT_MODULES_DIR),
+                    None,
+                )
             })?;
 
         let hosts_root =
             Self::expand_config_path(&self.hosts_root, &parsed_data.hosts_root, || {
-                crate::utils::file_fs::expand_path::<PathBuf, &str>(dotfiles_root.join(DEFAULT_HOSTS_DIR), None)
+                crate::utils::file_fs::expand_path::<PathBuf, &str>(
+                    dotfiles_root.join(DEFAULT_HOSTS_DIR),
+                    None,
+                )
             })?;
 
         let user_store_path =
@@ -357,19 +408,13 @@ impl DotdeployConfigBuilder {
                 )
             })?;
 
-        let system_store_path = Self::expand_config_path(
-            &self.system_store_path,
-            &parsed_data.system_store_path,
-            || crate::utils::file_fs::expand_path::<&str, &str>(DEFAULT_SYSTEM_STORE, None),
-        )?;
-
         Ok(DotdeployConfig {
             dry_run: self.dry_run.unwrap_or(parsed_data.dry_run.unwrap_or(false)),
             force: self.force.unwrap_or(parsed_data.force.unwrap_or(false)),
             noconfirm: self
                 .noconfirm
                 .unwrap_or(parsed_data.noconfirm.unwrap_or(false)),
-            config_root: config_file_path,
+            config_file: config_file_path,
             dotfiles_root,
             modules_root,
             hosts_root,
@@ -407,7 +452,6 @@ impl DotdeployConfigBuilder {
                 .skip_pkg_install
                 .unwrap_or(parsed_data.skip_pkg_install.unwrap_or(false)),
             user_store_path,
-            system_store_path,
             logs_dir: match self.logs_dir {
                 Some(ref value) => Clone::clone(value),
                 None => crate::logs::get_default_log_dir()?,
@@ -518,7 +562,7 @@ mod tests {
 
         temp_env::with_var("HOME", Some(temp_dir.path()), || -> Result<()> {
             let test_config = DotdeployConfigBuilder::default()
-                .with_config_root(Some(PathBuf::from(temp_dir.path())))
+                .with_config_file(Some(PathBuf::from(temp_dir.path())))
                 .build(0)?;
 
             assert_eq!(
@@ -566,7 +610,7 @@ mod tests {
         };
         create_config_file(&temp_dir, &test_config_content)?;
         let test_config = DotdeployConfigBuilder::default()
-            .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
+            .with_config_file(Some(temp_dir.into_path().join("dotdeploy")))
             .build(0)?;
 
         assert_eq!(
@@ -601,7 +645,7 @@ mod tests {
         create_config_file(&temp_dir, &test_config_content)?;
 
         let test_config = DotdeployConfigBuilder::default()
-            .with_config_root(Some(temp_dir.into_path().join("dotdeploy")))
+            .with_config_file(Some(temp_dir.into_path().join("dotdeploy")))
             .build(0)?;
 
         assert_eq!(

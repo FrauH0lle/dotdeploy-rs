@@ -43,7 +43,7 @@ where
         .collect();
 
     // Determine execution method based on privilege requirements
-    let output = if cmd_args.first() == Some(&pm.root_cmd.cmd()) {
+    let output = if cmd_args.first() == Some(pm.root_cmd.cmd()) {
         // Split sudo command into [sudo_cmd, actual_command...]
         pm.sudo_exec_output(
             // Actual package manager command

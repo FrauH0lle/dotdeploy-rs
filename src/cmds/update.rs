@@ -1,5 +1,7 @@
+use crate::config::DotdeployConfig;
 use crate::store::Store;
-use crate::{config::DotdeployConfig, store::Stores, utils::sudo::PrivilegeManager};
+use crate::store::sqlite::SQLiteStore;
+use crate::utils::sudo::PrivilegeManager;
 use color_eyre::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use tracing::info;
 ///
 /// * `modules` - Optional list of specific modules to update (all if None)
 /// * `config` - Application configuration containing deployment settings
-/// * `stores` - Combined user/system store instances to modify
+/// * `store` - User store instances to modify
 /// * `pm` - Privilege manager for handling elevated permissions
 ///
 /// # Errors
@@ -23,14 +25,13 @@ use tracing::info;
 pub(crate) async fn update(
     modules: Option<Vec<String>>,
     config: Arc<DotdeployConfig>,
-    stores: Arc<Stores>,
+    store: Arc<SQLiteStore>,
     pm: Arc<PrivilegeManager>,
 ) -> Result<bool> {
-    // REVIEW 2025-03-23: Allow modules arg?
     let modules = if let Some(modules) = modules {
         modules.into_iter().collect::<HashSet<_>>()
     } else {
-        stores
+        store
             .get_all_modules()
             .await?
             .into_iter()
@@ -38,7 +39,7 @@ pub(crate) async fn update(
             .collect::<HashSet<_>>()
     };
 
-    if let Some(mut cached_update_tasks) = stores.user_store.get_cached_commands("update").await? {
+    if let Some(mut cached_update_tasks) = store.get_cached_commands("update").await? {
         cached_update_tasks
             .tasks
             .retain(|t| modules.contains(&t.module_name));
@@ -47,10 +48,7 @@ pub(crate) async fn update(
     }
 
     for m in modules {
-        let msgs = stores
-            .user_store
-            .get_all_cached_messages(m.as_str(), "update")
-            .await;
+        let msgs = store.get_all_cached_messages(m.as_str(), "update").await;
 
         if let Ok(msgs) = msgs {
             for msg in msgs.into_iter() {

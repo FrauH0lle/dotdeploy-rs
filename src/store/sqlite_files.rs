@@ -63,7 +63,7 @@ mod tests {
             user_store_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let user_store = init_sqlite_store(&config, false, pm).await?;
+        let user_store = init_sqlite_store(&config, pm).await?;
 
         // Insert a module
         let test_module = StoreModuleBuilder::default()
