@@ -237,6 +237,7 @@ impl ModulesQueue {
                             source: fg.source,
                             shebang: fg.shebang,
                             comment_start: fg.comment_start,
+                            skip_auto_content: fg.skip_auto_content,
                             prepend: fg.prepend,
                             append: fg.append,
                             condition: fg.condition,
