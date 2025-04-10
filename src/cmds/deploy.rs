@@ -59,7 +59,7 @@ pub(crate) async fn deploy(
     mod_queue
         .collect_context(&mut context)
         .wrap_err("Failed to collect context")?;
-    mod_queue.finalize(&context, &handlebars)?;
+    mod_queue.finalize(&mut context, &handlebars)?;
 
     // Ensure modules are added to the store
     let mut set = JoinSet::new();

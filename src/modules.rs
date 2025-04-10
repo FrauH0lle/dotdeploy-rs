@@ -34,7 +34,7 @@ pub(crate) struct DotdeployModule {
     /// Module dependencies
     pub(crate) depends_on: Option<Vec<String>>,
     /// Other config TOML files to include
-    pub(crate) includes: Option<Vec<PathBuf>>,
+    pub(crate) includes: Option<Vec<Include>>,
     /// Files to be managed by this module
     pub(crate) files: Option<Vec<ModuleFile>>,
     /// Tasks to be executed by this module
@@ -49,6 +49,13 @@ pub(crate) struct DotdeployModule {
     pub(crate) context_vars: Option<HashMap<String, Value>>,
 }
 
+/// Deployment phases for organizing module components
+///
+/// Defines the execution order for different types of operations:
+/// - `Setup`: Initial environment preparation before deployment
+/// - `Config`: Primary configuration deployment (default phase)
+/// - `Update`: Post-deployment updates and maintenance
+/// - `Remove`: Cleanup operations for module removal
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub(crate) enum DeployPhase {
@@ -57,6 +64,53 @@ pub(crate) enum DeployPhase {
     Config,
     Update,
     Remove,
+}
+
+/// Module include definition for merging external configurations
+///
+/// Supports two inclusion formats:
+/// - `Simple`: Direct path to a TOML file
+/// - `Conditional`: Map with file list and template condition
+/// 
+/// # Examples
+/// ```toml
+/// includes = [
+///     "base_config.toml",
+///     { files = ["conditional.toml"], if = "{{environment.prod}}" }
+/// ]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Include {
+    Simple(PathBuf),
+    Conditional {
+        files: Vec<PathBuf>,
+        #[serde(rename = "if")]
+        condition: Option<String>,
+    },
+}
+
+impl ConditionEvaluator for Include {
+    fn eval_condition<T>(&self, context: &T, hb: &handlebars::Handlebars<'static>) -> Result<bool>
+    where
+        T: Serialize,
+    {
+        match self {
+            // Always true for Simple
+            Include::Simple(_path_buf) => Ok(true),
+            Include::Conditional {
+                files: _,
+                condition,
+            } => {
+                if let Some(condition) = condition {
+                    Self::eval_condition_helper(condition, context, hb)
+                } else {
+                    // Just return true if there is no condition
+                    Ok(true)
+                }
+            }
+        }
+    }
 }
 
 /// Filters and retains components based on condition evaluation
@@ -93,6 +147,133 @@ trait ConditionalComponent {
 }
 
 impl DotdeployModule {
+    /// Processes includes recursively with condition evaluation and context merging
+    ///
+    /// 1. Evaluates inclusion conditions using current context
+    /// 2. Merges configurations from qualified includes
+    /// 3. Handles nested includes through iterative processing
+    /// 4. Maintains original include order for deterministic behavior
+    ///
+    /// # Arguments
+    /// * `context` - Mutable template context updated with included variables
+    /// * `hb` - Handlebars registry for condition evaluation
+    ///
+    /// # Errors
+    /// Returns error for:
+    /// - Invalid include paths
+    /// - Template evaluation failures
+    /// - Configuration merging conflicts
+    pub(crate) fn process_includes(
+        &mut self,
+        context: &mut HashMap<String, Value>,
+        hb: &Handlebars<'static>,
+    ) -> Result<()> {
+        let mut processed_includes = Vec::new();
+        let mut pending_includes = self.includes.take().unwrap_or_default();
+
+        while !pending_includes.is_empty() {
+            for include in pending_includes.drain(..) {
+                let condition_met = include.eval_condition(context, hb)?;
+                if condition_met {
+                    match include {
+                        Include::Simple(path) => {
+                            self.merge_include(&path, context)?;
+                            processed_includes.push(Include::Simple(path));
+                        }
+                        Include::Conditional { files, condition } => {
+                            for file in files.iter() {
+                                self.merge_include(file, context)?;
+                            }
+                            processed_includes.push(Include::Conditional { files, condition });
+                        }
+                    }
+                }
+            }
+
+            // Get new includes added by merged configurations
+            pending_includes = self.includes.take().unwrap_or_default();
+        }
+
+        // Restore original includes list for potential future use
+        self.includes = Some(processed_includes);
+        Ok(())
+    }
+
+    /// Merges configuration from an included file with context updates
+    ///
+    /// 1. Resolves relative paths using module location
+    /// 2. Parses included TOML configuration
+    /// 3. Merges components with existing configuration
+    /// 4. Updates template context with included variables
+    ///
+    /// # Arguments
+    /// * `path` - Path to include file (relative or absolute)
+    /// * `context` - Mutable template context updated with included variables
+    ///
+    /// # Errors
+    /// Returns error for:
+    /// - Missing include files
+    /// - Invalid TOML syntax
+    /// - Path resolution failures
+    fn merge_include<P>(&mut self, path: P, context: &mut HashMap<String, Value>) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let mut env = HashMap::new();
+        env.insert("DOD_CURRENT_MODULE".to_string(), &self.location);
+
+        let expanded_path = file_fs::expand_path(&path, Some(&env))?;
+        let abs_path = if expanded_path.is_relative() {
+            self.location.join(expanded_path)
+        } else {
+            expanded_path
+        };
+
+        let content = std::fs::read_to_string(&abs_path)
+            .wrap_err_with(|| format!("Failed to read include: {}", abs_path.display()))?;
+
+        let mut included: DotdeployModuleBuilder = toml::from_str(&content)
+            .wrap_err_with(|| format!("Failed to parse include: {}", abs_path.display()))?;
+
+        // Process nested includes recursively
+        if let Some(includes) = included.includes.take() {
+            self.includes.get_or_insert_with(Vec::new).extend(includes);
+        }
+
+        // Merge other components
+        if let Some(files) = included.files.take() {
+            let targets: HashSet<_> = files.iter().map(|f| &f.target).collect();
+            self.files
+                .get_or_insert_with(Vec::new)
+                .retain(|f| !targets.contains(&&f.target));
+            self.files.get_or_insert_with(Vec::new).extend(files);
+        }
+
+        if let Some(tasks) = included.tasks.take() {
+            self.tasks.get_or_insert_with(Vec::new).extend(tasks);
+        }
+
+        if let Some(messages) = included.messages.take() {
+            self.messages.get_or_insert_with(Vec::new).extend(messages);
+        }
+
+        if let Some(generators) = included.generators.take() {
+            self.generators
+                .get_or_insert_with(Vec::new)
+                .extend(generators);
+        }
+
+        if let Some(packages) = included.packages.take() {
+            self.packages.get_or_insert_with(Vec::new).extend(packages);
+        }
+
+        if let Some(vars) = included.context_vars.take() {
+            context.extend(vars);
+        }
+
+        Ok(())
+    }
+
     /// Validates the module configuration for consistency and correctness.
     ///
     /// This function checks:
@@ -194,7 +375,7 @@ pub(crate) struct DotdeployModuleBuilder {
     __location__: Option<PathBuf>,
     __reason__: Option<PathBuf>,
     depends_on: Option<Vec<String>>,
-    includes: Option<Vec<PathBuf>>,
+    includes: Option<Vec<Include>>,
     files: Option<Vec<ModuleFile>>,
     tasks: Option<Vec<ModuleTask>>,
     messages: Option<Vec<ModuleMessage>>,
@@ -231,7 +412,7 @@ impl DotdeployModuleBuilder {
     /// # Errors
     /// Returns an error if required fields (name/location) are missing
     pub(crate) fn build(&mut self, reason: String) -> Result<DotdeployModule> {
-        let mut module = DotdeployModule {
+        let module = DotdeployModule {
             name: Clone::clone(self.__name__.as_ref().ok_or_eyre("Empty 'name' field")?),
             location: Clone::clone(
                 self.__location__
@@ -248,83 +429,6 @@ impl DotdeployModuleBuilder {
             packages: self.packages.take(),
             context_vars: self.context_vars.take(),
         };
-
-        if let Some(ref includes) = module.includes {
-            for include_path in includes {
-                // Make the current module location available as an env var
-                let mut env = HashMap::new();
-                env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
-
-                let mut expanded = file_fs::expand_path(include_path, Some(&env))?;
-
-                // If the path start with '/' we assume it is absolute
-                if !expanded.starts_with("/") {
-                    // Otherwise, expand it relative to the current module directory
-                    let mut path = PathBuf::from(&module.location);
-                    path.push(expanded);
-                    expanded = path
-                }
-
-                let include_content = std::fs::read_to_string(&expanded).wrap_err_with(|| {
-                    format!("Failed to read include file: {}", expanded.display())
-                })?;
-
-                let included_config: DotdeployModuleBuilder = toml::from_str(&include_content)
-                    .wrap_err_with(|| {
-                        format!(
-                            "Failed to parse included config from: {}",
-                            include_path.display()
-                        )
-                    })?;
-
-                // Replace any existing files with same target from included config
-                if let Some(files) = included_config.files {
-                    if let Some(ref mut module_files) = module.files {
-                        // Remove any files that have matching targets in the included files
-                        let included_targets =
-                            files.iter().map(|f| &f.target).collect::<HashSet<_>>();
-                        module_files.retain(|f| !included_targets.contains(&f.target));
-
-                        // Add all files from included config
-                        module_files.extend(files);
-                    }
-                }
-
-                // Merge other fields by extending 
-                if let Some(included_tasks) = included_config.tasks {
-                    module
-                        .tasks
-                        .get_or_insert_with(Vec::new)
-                        .extend(included_tasks);
-                }
-                if let Some(included_messages) = included_config.messages {
-                    module
-                        .messages
-                        .get_or_insert_with(Vec::new)
-                        .extend(included_messages);
-                }
-                if let Some(included_generators) = included_config.generators {
-                    module
-                        .generators
-                        .get_or_insert_with(Vec::new)
-                        .extend(included_generators);
-                }
-                if let Some(included_packages) = included_config.packages {
-                    module
-                        .packages
-                        .get_or_insert_with(Vec::new)
-                        .extend(included_packages);
-                }
-
-                // Merge HashMap by inserting (overwriting duplicates)
-                if let Some(included_vars) = included_config.context_vars {
-                    module
-                        .context_vars
-                        .get_or_insert_with(HashMap::new)
-                        .extend(included_vars);
-                }
-            }
-        }
 
         Ok(module)
     }

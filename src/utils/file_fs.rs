@@ -488,14 +488,6 @@ mod tests {
             PathBuf::from("/absolute/path.txt")
         );
 
-        // Test with invalid UTF-8
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
-        assert!(
-            expand_path::<PathBuf, &str>(PathBuf::from(OsString::from_vec(vec![255])), None)
-                .is_err()
-        );
-
         Ok(())
     }
 

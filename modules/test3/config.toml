@@ -1,5 +1,4 @@
 includes = [
-"skata.toml",
 "foo.toml"
 ]
 

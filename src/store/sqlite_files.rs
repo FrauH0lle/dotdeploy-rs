@@ -69,6 +69,7 @@ mod tests {
         let test_module = StoreModuleBuilder::default()
             .with_name("test")
             .with_location("/testpath")
+            .with_location_u8(os_str_to_bytes(OsString::from_str("/testpath")?))
             .with_user(Some("user".to_string()))
             .with_reason("manual")
             .with_depends(None)
@@ -101,8 +102,8 @@ mod tests {
         assert_eq!(Some(test_file), result);
 
         // Missing file
-        let e = user_store.get_file("/doesNotExist.txt").await;
-        assert!(e.is_err());
+        let e = user_store.get_file("/doesNotExist.txt").await?;
+        assert!(e.is_none());
 
         Ok(())
     }

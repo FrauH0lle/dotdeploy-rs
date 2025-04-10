@@ -563,7 +563,10 @@ WHERE modules.name = ?1
 
         Ok(
             file.map_or(StoreSourceFileChecksum::new::<PathBuf>(None, None), |f| {
-                StoreSourceFileChecksum::new(Some(filename.as_ref()), f.source_checksum)
+                StoreSourceFileChecksum::new(
+                    f.source_u8.map(|x| PathBuf::from(bytes_to_os_str(x))),
+                    f.source_checksum,
+                )
             }),
         )
     }
@@ -663,17 +666,18 @@ VALUES (?1, ?2)
 
     async fn get_all_module_packages<S: AsRef<str>>(&self, module: S) -> Result<Vec<String>> {
         let module = module.as_ref();
-        
+
         // Retrieve the ID of the module
         let module_id = match sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
             .fetch_optional(&self.pool)
-            .await? {
-                Some(id) => id,
-                None => {
-                    warn!("Module {} not found in store", module);
-                    return Ok(vec![])
-                },
-            };
+            .await?
+        {
+            Some(id) => id,
+            None => {
+                warn!("Module {} not found in store", module);
+                return Ok(vec![]);
+            }
+        };
 
         let rows = sqlx::query!(
             "SELECT name FROM packages WHERE module_id = ?1",
@@ -852,6 +856,7 @@ pub(crate) mod tests {
         tests::pm_setup,
     };
     use color_eyre::eyre::eyre;
+    use std::ffi::OsString;
     use tempfile::tempdir;
 
     pub(crate) async fn store_setup_helper(op_tye: &str) -> Result<SQLiteStore> {
@@ -870,6 +875,7 @@ pub(crate) mod tests {
         let test_module = StoreModuleBuilder::default()
             .with_name("test")
             .with_location("/testpath")
+            .with_location_u8(os_str_to_bytes(OsString::from_str("/testpath")?))
             .with_user(Some("user".to_string()))
             .with_reason("manual")
             .with_depends(None)

@@ -19,7 +19,6 @@ use bstr::ByteSlice;
 use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use color_eyre::{Report, Result, Section};
 use handlebars::Handlebars;
-use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -77,35 +76,47 @@ impl ModulesQueue {
         Ok(())
     }
 
-    /// Finalizes module configurations by validating and evaluating conditions
+    /// Finalizes module configurations through validation and processing
     ///
-    /// Performs two crucial steps for each module:
-    /// 1. Validates module configuration integrity
-    /// 2. Evaluates conditional expressions against the context
+    /// Execution order:
+    /// 1. Process includes recursively with current context
+    /// 2. Validate module configuration integrity
+    /// 3. Evaluate component conditions
     ///
-    /// * `context` - Template context containing variables for condition evaluation
-    /// * `hb` - Handlebars instance for template processing
+    /// Modifies module state by:
+    /// - Merging included configurations
+    /// - Filtering components based on conditions
+    /// - Updating template context with included variables
+    ///
+    /// # Arguments
+    /// * `context` - Mutable template context updated through includes
+    /// * `hb` - Handlebars registry for condition evaluation
     ///
     /// # Errors
-    /// * Returns error if any module fails validation
-    /// * Returns error if condition evaluation fails for any module element
-    pub(crate) fn finalize<T>(&mut self, context: &T, hb: &Handlebars<'static>) -> Result<()>
-    where
-        T: Serialize,
-    {
-        // Process each module in sequence
+    /// Returns error for:
+    /// - Invalid module configurations
+    /// - Failed condition evaluations
+    /// - Include processing failures
+    pub(crate) fn finalize(
+        &mut self,
+        context: &mut HashMap<String, Value>,
+        hb: &Handlebars<'static>,
+    ) -> Result<()> {
         for module in self.modules.iter_mut() {
-            // Validate module configuration integrity
+            // Process includes recursively first
+            module.process_includes(context, hb).wrap_err_with(|| {
+                format!("Failed to process includes in module {}", &module.name)
+            })?;
+
+            // Then validate and evaluate other conditions
             module
                 .validate()
                 .wrap_err_with(|| format!("Failed to validate module {}", &module.name))?;
 
-            // Evaluate conditions for files, tasks and messages
-            module.eval_conditions(&context, hb).wrap_err_with(|| {
-                format!("Failed to evaluate conditionals in module {}", &module.name)
+            module.eval_conditions(context, hb).wrap_err_with(|| {
+                format!("Failed to evaluate conditions in module {}", &module.name)
             })?;
         }
-
         Ok(())
     }
 

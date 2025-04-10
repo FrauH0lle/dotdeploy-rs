@@ -610,7 +610,9 @@ mod tests {
         };
         create_config_file(&temp_dir, &test_config_content)?;
         let test_config = DotdeployConfigBuilder::default()
-            .with_config_file(Some(temp_dir.into_path().join("dotdeploy")))
+            .with_config_file(Some(
+                temp_dir.into_path().join("dotdeploy").join("config.toml"),
+            ))
             .build(0)?;
 
         assert_eq!(
@@ -645,7 +647,9 @@ mod tests {
         create_config_file(&temp_dir, &test_config_content)?;
 
         let test_config = DotdeployConfigBuilder::default()
-            .with_config_file(Some(temp_dir.into_path().join("dotdeploy")))
+            .with_config_file(Some(
+                temp_dir.into_path().join("dotdeploy").join("config.toml"),
+            ))
             .build(0)?;
 
         assert_eq!(
