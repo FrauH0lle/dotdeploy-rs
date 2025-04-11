@@ -11,7 +11,7 @@ struct ModuleTaskIntermediate {
     shell: Option<String>,
     exec: Option<String>,
     args: Option<Vec<String>>,
-    #[serde(default = "default_option_bool")]
+    #[serde(default = "default_expand_args")]
     expand_args: Option<bool>,
     #[serde(default = "default_option_bool")]
     sudo: Option<bool>,
@@ -30,7 +30,7 @@ pub(crate) struct ModuleTask {
     pub(crate) shell: Option<OsString>,
     pub(crate) exec: Option<OsString>,
     pub(crate) args: Option<Vec<OsString>>,
-    #[serde(default = "default_option_bool")]
+    #[serde(default = "default_expand_args")]
     pub(crate) expand_args: Option<bool>,
     #[serde(default = "default_option_bool")]
     pub(crate) sudo: Option<bool>,
@@ -40,6 +40,10 @@ pub(crate) struct ModuleTask {
     pub(crate) hook: Option<String>,
     #[serde(rename = "if")]
     pub(crate) condition: Option<String>,
+}
+
+fn default_expand_args() -> Option<bool> {
+    Some(true)
 }
 
 impl From<ModuleTaskIntermediate> for ModuleTask {
