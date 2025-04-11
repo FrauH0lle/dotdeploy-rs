@@ -6,6 +6,7 @@
 //! * `get_cli` - Primary entry point for CLI parsing
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::{ffi::OsString, path::PathBuf};
 
 #[derive(Parser)]
@@ -157,6 +158,17 @@ pub(crate) enum Commands {
         /// Skip safety confirmations
         #[clap(long)]
         really: bool,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Set the shell for generating completions [values: bash, elvish, fish, powerShell, zsh]
+        #[clap(long, short)]
+        shell: Shell,
+
+        /// Set the out directory for writing completions file
+        #[clap(long)]
+        out: Option<PathBuf>,
     },
 }
 

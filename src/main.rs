@@ -1,4 +1,5 @@
 use crate::store::Store;
+use clap::CommandFactory;
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use config::DotdeployConfigBuilder;
@@ -392,6 +393,27 @@ async fn run(
         cli::Commands::Sync { auto: _ } => todo!(),
         cli::Commands::Validate { diff: _, fix: _ } => todo!(),
         cli::Commands::Nuke { really: _ } => todo!(),
+        cli::Commands::Completions { shell, out } => {
+            if let Some(out) = out {
+                clap_complete::generate_to(shell, &mut cli::Cli::command(), "dotdeploy", &out)
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to build completions for {} and write them to {}",
+                            shell,
+                            out.display()
+                        )
+                    })?;
+                Ok(true)
+            } else {
+                clap_complete::generate(
+                    shell,
+                    &mut cli::Cli::command(),
+                    "dotdeploy",
+                    &mut std::io::stdout(),
+                );
+                Ok(true)
+            }
+        }
     };
 
     // --
