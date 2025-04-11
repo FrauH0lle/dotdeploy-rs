@@ -239,6 +239,9 @@ impl PhaseFile {
             }
         }
 
+        // Remove present file
+        file_utils.delete_file(&self.target).await?;
+
         debug!(
             "Trying to link {} -> {}",
             &source_file.display(),
