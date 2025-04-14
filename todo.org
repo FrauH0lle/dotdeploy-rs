@@ -1,42 +1,42 @@
 #+title: Todo
 
-* TODO Code review
+* DONE Code review
 - [X] cli.rs
-- [ ] cmds.rs
-- [ ] cmds/common.rs
-- [ ] cmds/deploy.rs
-- [ ] cmds/remove.rs
-- [ ] cmds/update.rs
+- [X] cmds.rs
+- [X] cmds/common.rs
+- [X] cmds/deploy.rs
+- [X] cmds/remove.rs
+- [X] cmds/update.rs
 - [X] config.rs
-- [ ] errors.rs
+- [X] errors.rs
 - [X] handlebars_helper.rs
 - [X] logs.rs
-- [ ] main.rs
-- [ ] modules.rs
-- [ ] modules/files.rs
-- [ ] modules/generate_file.rs
-- [ ] modules/messages.rs
-- [ ] modules/packages.rs
-- [ ] modules/queue.rs
-- [ ] modules/tasks.rs
-- [ ] phases.rs
-- [ ] phases/file.rs
-- [ ] phases/task.rs
-- [ ] store.rs
-- [ ] store/sqlite_backups.rs
-- [ ] store/sqlite_checksums.rs
-- [ ] store/sqlite_files.rs
-- [ ] store/sqlite_modules.rs
-- [ ] store/sqlite.rs
-- [ ] tests.rs
-- [ ] utils.rs
-- [ ] utils/commands.rs
-- [ ] utils/common.rs
-- [ ] utils/file_checksum.rs
-- [ ] utils/file_fs.rs
-- [ ] utils/file_metadata.rs
-- [ ] utils/file_permissions.rs
-- [ ] utils/sudo.rs
+- [X] main.rs
+- [X] modules.rs
+- [X] modules/files.rs
+- [X] modules/generate_file.rs
+- [X] modules/messages.rs
+- [X] modules/packages.rs
+- [X] modules/queue.rs
+- [X] modules/tasks.rs
+- [X] phases.rs
+- [X] phases/file.rs
+- [X] phases/task.rs
+- [X] store.rs
+- [X] store/sqlite_backups.rs
+- [X] store/sqlite_checksums.rs
+- [X] store/sqlite_files.rs
+- [X] store/sqlite_modules.rs
+- [X] store/sqlite.rs
+- [X] tests.rs
+- [X] utils.rs
+- [X] utils/commands.rs
+- [X] utils/common.rs
+- [X] utils/file_checksum.rs
+- [X] utils/file_fs.rs
+- [X] utils/file_metadata.rs
+- [X] utils/file_permissions.rs
+- [X] utils/sudo.rs
 
   AI: Perform a code review for the function below.
   - Ensure that the conventions are met.
@@ -50,5 +50,10 @@
   - Review the code in the context of the whole codebase and make changes as
     necessary.
 
-* TODO Use derive_builder for ALL THE BUILDER PATTERNS!
+* DONE Use derive_builder for ALL THE BUILDER PATTERNS!
 - Replace all ~..::new()~ methods with a builder
+* TODO ~sync~ subcommand
+- allow further subcommands files, tasks, packages, generate which can be
+  combined. ~deploy~ becomes then sync with all subcommands.
+* TODO ~redeploy~ subcommand
+- remove and deploy a module and keep its install reason. Also allow to skip packages.

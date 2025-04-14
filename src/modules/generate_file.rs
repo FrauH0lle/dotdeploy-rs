@@ -191,7 +191,7 @@ impl Generate {
             // Backup file
             if !store.check_backup_exists(&self.target).await? {
                 debug!("Creating backup of {}", &self.target.display());
-                if file_utils.check_file_exists(&self.target).await? {
+                if file_utils.check_path_exists(&self.target).await? {
                     store.add_backup(&self.target).await?
                 } else {
                     store.add_dummy_backup(&self.target).await?

@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 /// Expands a path, resolving environment variables and tilde expressions.
@@ -56,10 +58,10 @@ pub(crate) fn expand_path<P: AsRef<Path>, S: AsRef<OsStr>>(
 }
 
 impl FileUtils {
-    /// Checks if a file exists, using sudo if necessary due to permission issues.
+    /// Checks if a file or directory exists, using sudo if necessary due to permission issues.
     ///
-    /// This function attempts to check file existence normally first, and if a permission error is
-    /// encountered, it retries the operation using sudo.
+    /// This function attempts to check file/directory existence normally first, and if a permission
+    /// error is encountered, it retries the operation using sudo.
     ///
     /// # Arguments
     ///
@@ -68,7 +70,7 @@ impl FileUtils {
     /// # Errors
     ///
     /// Returns an error if an error occurs during the check (other than permission issues).
-    pub(crate) async fn check_file_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
+    pub(crate) async fn check_path_exists<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
         match path.as_ref().try_exists() {
             Ok(false) => Ok(false),
             Ok(true) => Ok(true),
@@ -218,7 +220,7 @@ impl FileUtils {
         .await?;
 
         // Remove existing file or symlink if it exists
-        if self.check_file_exists(&to).await? {
+        if self.check_path_exists(&to).await? {
             self.delete_file(&to).await?
         }
 
@@ -270,7 +272,7 @@ impl FileUtils {
         .await?;
 
         // Remove existing file or symlink if it exists
-        if self.check_file_exists(&to).await? {
+        if self.check_path_exists(&to).await? {
             self.delete_file(&to).await?
         }
 
@@ -347,11 +349,26 @@ impl FileUtils {
     /// # Errors
     ///
     /// Returns an error if an error occurs during the process.
-    pub(crate) async fn delete_parents<P: AsRef<Path>>(&self, path: P, no_ask: bool) -> Result<()> {
+    pub(crate) async fn delete_parents<P: AsRef<Path>>(
+        &self,
+        path: P,
+        no_ask: bool,
+        guard: Option<Arc<Mutex<()>>>,
+    ) -> Result<()> {
+        let guard = guard.unwrap_or_else(|| Arc::new(Mutex::new(())));
+        let _guard = guard.lock().await;
+
         let mut path = path
             .as_ref()
             .parent()
             .ok_or_else(|| eyre!("Failed to get parent of {:?}", path.as_ref()))?;
+
+        // The path might have been deleted by another thread so check if it still exists before
+        // going further.
+        if !self.check_path_exists(path).await? {
+            warn!("{} does not exist anymore", path.display());
+            return Ok(());
+        }
 
         while path.is_dir()
             && match path.read_dir() {
@@ -462,7 +479,10 @@ mod tests {
         let home = dirs::home_dir().ok_or_eyre("Failed to get HOME dir")?;
         assert_eq!(
             expand_path::<&str, &str>("~/test.txt", None)?,
-            PathBuf::from(format!("{}/test.txt", home.to_str().ok_or_eyre("Invalid UTF-8")?))
+            PathBuf::from(format!(
+                "{}/test.txt",
+                home.to_str().ok_or_eyre("Invalid UTF-8")?
+            ))
         );
 
         // Test with environment variable
@@ -479,7 +499,10 @@ mod tests {
         env.insert("TEST_DIR".to_string(), "/tmp/test".to_string());
         assert_eq!(
             expand_path("~/dir/$TEST_DIR/file.txt", Some(&env))?,
-            PathBuf::from(format!("{}/dir/tmp/test/file.txt", home.to_str().ok_or_eyre("Invalid UTF-8")?))
+            PathBuf::from(format!(
+                "{}/dir/tmp/test/file.txt",
+                home.to_str().ok_or_eyre("Invalid UTF-8")?
+            ))
         );
 
         // Test with absolute path (no expansion needed)
@@ -497,8 +520,8 @@ mod tests {
         let fs_utils = FileUtils::new(Arc::clone(&pm));
 
         let temp_file = tempfile::NamedTempFile::new()?;
-        assert!(fs_utils.check_file_exists(temp_file).await?);
-        assert!(!fs_utils.check_file_exists("/tmp/doesnotexist.txt").await?);
+        assert!(fs_utils.check_path_exists(temp_file).await?);
+        assert!(!fs_utils.check_path_exists("/tmp/doesnotexist.txt").await?);
 
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
@@ -512,10 +535,10 @@ mod tests {
         .await?;
         pm.sudo_exec("chmod", ["600", temp_dir.path().to_str().unwrap()], None)
             .await?;
-        assert!(fs_utils.check_file_exists(temp_file).await?);
+        assert!(fs_utils.check_path_exists(temp_file).await?);
         assert!(
             !fs_utils
-                .check_file_exists(temp_dir.path().join("doesnotexist.txt"))
+                .check_path_exists(temp_dir.path().join("doesnotexist.txt"))
                 .await?
         );
         Ok(())
@@ -609,8 +632,8 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let target = temp_dir.path().join("a").join("b").join("c");
         fs_utils.ensure_dir_exists(&target).await?;
-        assert!(fs_utils.check_file_exists(&target).await?);
-        assert!(fs_utils.check_file_exists(&target).await?);
+        assert!(fs_utils.check_path_exists(&target).await?);
+        assert!(fs_utils.check_path_exists(&target).await?);
 
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
@@ -626,8 +649,8 @@ mod tests {
             .await?;
 
         fs_utils.ensure_dir_exists(&target).await?;
-        assert!(fs_utils.check_file_exists(&target).await?);
-        assert!(fs_utils.check_file_exists(&target).await?);
+        assert!(fs_utils.check_path_exists(&target).await?);
+        assert!(fs_utils.check_path_exists(&target).await?);
         Ok(())
     }
 
@@ -638,9 +661,9 @@ mod tests {
 
         let temp_file = tempfile::NamedTempFile::new()?;
 
-        assert!(fs_utils.check_file_exists(&temp_file).await?);
+        assert!(fs_utils.check_path_exists(&temp_file).await?);
         assert!(fs_utils.delete_file(&temp_file).await.is_ok());
-        assert!(!fs_utils.check_file_exists(&temp_file).await?);
+        assert!(!fs_utils.check_path_exists(&temp_file).await?);
         // Return Ok(()) if file is not found
         assert!(fs_utils.delete_file(&temp_file).await.is_ok());
 
@@ -656,9 +679,9 @@ mod tests {
         pm.sudo_exec("chmod", ["600", temp_file.path().to_str().unwrap()], None)
             .await?;
 
-        assert!(fs_utils.check_file_exists(&temp_file).await?);
+        assert!(fs_utils.check_path_exists(&temp_file).await?);
         assert!(fs_utils.delete_file(&temp_file).await.is_ok());
-        assert!(!fs_utils.check_file_exists(&temp_file).await?);
+        assert!(!fs_utils.check_path_exists(&temp_file).await?);
         // Return Ok(()) if file is not found
         assert!(fs_utils.delete_file(&temp_file).await.is_ok());
         Ok(())
@@ -682,21 +705,44 @@ mod tests {
         fs::write(&temp_path1.join("text.txt"), "hi").await?;
         // Try to delete non-empty dir
         fs_utils
-            .delete_parents(&temp_path1.join("text.txt"), true)
+            .delete_parents(&temp_path1.join("text.txt"), true, None)
             .await?;
         assert!(&temp_path1.exists());
         // Remove file and try again
         fs::remove_file(&temp_path1.join("text.txt")).await?;
         fs_utils
-            .delete_parents(&temp_path1.join("text.txt"), true)
+            .delete_parents(&temp_path1.join("text.txt"), true, None)
             .await?;
         assert!(!&temp_path1.exists());
         fs_utils
-            .delete_parents(&temp_path2.join("text.txt"), true)
+            .delete_parents(&temp_path2.join("text.txt"), true, None)
             .await?;
         assert!(!&temp_path2.exists());
         // Verify that the grandparent got deleted as well
         assert!(!&temp_dir.path().exists());
+
+        // Test concurrent deletion of multiple files in same parent
+        let temp_dir = tempfile::tempdir()?;
+        let mut set = tokio::task::JoinSet::new();
+        let guard = Arc::new(Mutex::new(()));
+
+        // Create 4 files in the same directory
+        for i in 0..4 {
+            let file_path = temp_dir.path().join(format!("file{}.txt", i));
+            let fs_utils = FileUtils::new(Arc::clone(&pm));
+            let guard = Arc::clone(&guard);
+            set.spawn(async move {
+                fs_utils.delete_parents(&file_path, true, Some(guard)).await
+            });
+        }
+
+        // Wait for all deletions to complete
+        while let Some(res) = set.join_next().await {
+            res??; // Propagate any errors
+        }
+
+        // Verify directory cleanup
+        assert!(!temp_dir.path().exists(), "Parent directory should be removed");
 
         // Test with elevated permissions
         let temp_dir = tempfile::tempdir()?;
@@ -722,7 +768,7 @@ mod tests {
 
         // Try to delete non-empty dir
         fs_utils
-            .delete_parents(&temp_path1.join("text.txt"), true)
+            .delete_parents(&temp_path1.join("text.txt"), true, None)
             .await?;
         assert!(&temp_path1.exists());
         // Remove file and try again
@@ -733,15 +779,43 @@ mod tests {
         )
         .await?;
         fs_utils
-            .delete_parents(&temp_path1.join("text.txt"), true)
+            .delete_parents(&temp_path1.join("text.txt"), true, None)
             .await?;
         assert!(!&temp_path1.exists());
         fs_utils
-            .delete_parents(&temp_path2.join("text.txt"), true)
+            .delete_parents(&temp_path2.join("text.txt"), true, None)
             .await?;
         assert!(!&temp_path2.exists());
         // Verify that the grandparent got deleted as well
         assert!(!&temp_dir.path().exists());
+
+        // Test concurrent deletion of multiple files in same parent with elevated permissions
+        let temp_dir = tempfile::tempdir()?;
+        let mut set = tokio::task::JoinSet::new();
+        let guard = Arc::new(Mutex::new(()));
+        pm.sudo_exec("chown", ["root:root", temp_dir.path().to_str().unwrap()], None)
+            .await?;
+        pm.sudo_exec("chmod", ["600", temp_dir.path().to_str().unwrap()], None).await?;
+
+        // Create 4 files in the same directory
+        for i in 0..4 {
+            let file_path = temp_dir.path().join(format!("file{}.txt", i));
+            let fs_utils = FileUtils::new(Arc::clone(&pm));
+            let guard = Arc::clone(&guard);
+            set.spawn(async move {
+                fs_utils.delete_parents(&file_path, true, Some(guard)).await
+            });
+        }
+
+        // Wait for all deletions to complete
+        while let Some(res) = set.join_next().await {
+            res??; // Propagate any errors
+        }
+
+        // Verify directory cleanup
+        assert!(!temp_dir.path().exists(), "Parent directory should be removed");
+
+
         Ok(())
     }
 }

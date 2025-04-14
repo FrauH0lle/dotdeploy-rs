@@ -101,7 +101,7 @@ impl PhaseFile {
             .get_source_checksum(&self.target)
             .await?
             .source_checksum;
-        let target_file_checksum = if file_utils.check_file_exists(&self.target).await? {
+        let target_file_checksum = if file_utils.check_path_exists(&self.target).await? {
             Some(file_utils.calculate_sha256_checksum(&self.target).await?)
         } else {
             None
@@ -125,7 +125,7 @@ impl PhaseFile {
         // Backup file
         if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
-            if file_utils.check_file_exists(&self.target).await? {
+            if file_utils.check_path_exists(&self.target).await? {
                 store.add_backup(&self.target).await?
             } else {
                 store.add_dummy_backup(&self.target).await?
@@ -219,7 +219,7 @@ impl PhaseFile {
         // A file should not be linked if:
         // - It is already in the store
         //   - and a link between source and target exists
-        if file_utils.check_file_exists(&self.target).await?
+        if file_utils.check_path_exists(&self.target).await?
             && file_utils
                 .check_link_exists(&self.target, Some(source_file))
                 .await?
@@ -232,7 +232,7 @@ impl PhaseFile {
         // Backup file
         if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
-            if file_utils.check_file_exists(&self.target).await? {
+            if file_utils.check_path_exists(&self.target).await? {
                 store.add_backup(&self.target).await?
             } else {
                 store.add_dummy_backup(&self.target).await?
@@ -324,7 +324,7 @@ impl PhaseFile {
         // Backup file
         if !store.check_backup_exists(&self.target).await? {
             debug!("Creating backup of {}", &self.target.display());
-            if file_utils.check_file_exists(&self.target).await? {
+            if file_utils.check_path_exists(&self.target).await? {
                 store.add_backup(&self.target).await?
             } else {
                 store.add_dummy_backup(&self.target).await?

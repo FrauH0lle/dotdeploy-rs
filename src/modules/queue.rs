@@ -499,12 +499,14 @@ impl ModulesQueue {
         // Remove files which are not part of the module config anymore
         if !deployed_files.is_empty() {
             let mut set = JoinSet::new();
+            let guard = Arc::new(tokio::sync::Mutex::new(()));
 
             for file in deployed_files {
                 set.spawn({
                     let file_utils = FileUtils::new(Arc::clone(&pm));
                     let config = Arc::clone(config);
                     let store = Arc::clone(&store);
+                    let guard = Arc::clone(&guard);
                     async move {
                         let target = PathBuf::from(bytes_to_os_str(file.target_u8));
                         info!(
@@ -524,7 +526,7 @@ impl ModulesQueue {
                         store.remove_file(&target).await?;
 
                         // Delete potentially empty directories
-                        file_utils.delete_parents(&target, config.noconfirm).await?;
+                        file_utils.delete_parents(&target, config.noconfirm, Some(guard)).await?;
                         Ok::<_, Report>(())
                     }
                 });

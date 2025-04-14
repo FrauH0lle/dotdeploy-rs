@@ -505,16 +505,18 @@ where
     I: IntoIterator<Item = StoreFile>,
 {
     let mut set = JoinSet::new();
+    let guard = Arc::new(tokio::sync::Mutex::new(()));
 
     for file in deployed_files {
         set.spawn({
             let file_utils = FileUtils::new(Arc::clone(&pm));
             let config = Arc::clone(&config);
             let store = Arc::clone(&store);
+            let guard = Arc::clone(&guard);
             async move {
                 // Check if source still exists
                 if let Some(ref source) = file.source {
-                    if !file_utils.check_file_exists(source).await? {
+                    if !file_utils.check_path_exists(source).await? {
                         info!(
                             "Source file {} does not exist anymore, removing deployed target {}",
                             &source, &file.target
@@ -532,8 +534,9 @@ where
                         store.remove_file(&file.target).await?;
 
                         // Delete potentially empty directories
+                        let guard = Arc::clone(&guard);
                         file_utils
-                            .delete_parents(&file.target, config.noconfirm)
+                            .delete_parents(&file.target, config.noconfirm, Some(guard))
                             .await?
                     }
                 }
@@ -558,13 +561,13 @@ where
 
                     // Delete potentially empty directories
                     file_utils
-                        .delete_parents(&file.target, config.noconfirm)
+                        .delete_parents(&file.target, config.noconfirm, Some(guard))
                         .await?
                 }
 
                 let mut modified_files = vec![];
                 // Check if target was modified
-                if file_utils.check_file_exists(&file.target).await? {
+                if file_utils.check_path_exists(&file.target).await? {
                     let file_checksum = file_utils.calculate_sha256_checksum(&file.target).await?;
                     let store_checksum = store.get_target_checksum(&file.target).await?;
                     if let Some(store_checksum) = store_checksum.target_checksum {

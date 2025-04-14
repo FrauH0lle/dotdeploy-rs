@@ -189,10 +189,14 @@ pub(crate) async fn remove(
     let file_utils = Arc::new(FileUtils::new(Arc::clone(&pm)));
 
     let mut set = JoinSet::new();
+    let guard = Arc::new(tokio::sync::Mutex::new(()));
+
     for f in files {
         set.spawn({
             let store = Arc::clone(&store);
+            let config = Arc::clone(&config);
             let file_utils = Arc::clone(&file_utils);
+            let guard = Arc::clone(&guard);
             async move {
                 let target = PathBuf::from(bytes_to_os_str(f.target_u8));
                 info!("Removing {}", &target.display());
@@ -202,17 +206,14 @@ pub(crate) async fn remove(
                     store.restore_backup(&target, &target).await?;
                     store.remove_backup(&target).await?;
                 }
-                Ok(target)
+                file_utils.delete_parents(&target, config.noconfirm, Some(guard)).await?;
+
+                // Delete potentially empty directories
+                Ok::<_, Report>(())
             }
         });
     }
-    let removed_files = errors::join_errors(set.join_all().await)?;
-
-    // NOTE 2025-03-31: This is safer to do sync
-    // Delete potentially empty directories
-    for f in removed_files {
-        file_utils.delete_parents(&f, config.noconfirm).await?;
-    }
+    errors::join_errors(set.join_all().await)?;
 
     // Post hook
     tasks.exec_post_tasks(&pm, &config).await?;
