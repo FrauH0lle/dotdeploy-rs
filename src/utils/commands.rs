@@ -91,6 +91,8 @@ where
     // Buffer for reading chunks of data (1KB chunks)
     let mut chunk = vec![0; 1024];
 
+    writer.flush().await.ok();
+
     loop {
         // Read chunk from input stream
         match reader.read(&mut chunk).await {

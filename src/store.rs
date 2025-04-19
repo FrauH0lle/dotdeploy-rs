@@ -4,17 +4,18 @@
 //! their source and target as well as their associated module.
 
 use crate::modules::messages::CommandMessage;
-use crate::phases::DeployPhaseStruct;
+use crate::phases::task::PhaseTask;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
 use crate::utils::FileUtils;
 use crate::utils::sudo::PrivilegeManager;
-use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::Result;
+use color_eyre::eyre::{WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::debug;
+use uuid::Uuid;
 
 pub(crate) mod sqlite;
 pub(crate) mod sqlite_backups;
@@ -146,18 +147,6 @@ pub(crate) trait Store {
         filename: P,
     ) -> Result<StoreTargetFileChecksum>;
 
-    /// Retrieves all source checksums from the store database.
-    ///
-    /// # Errors
-    /// Returns an error if there's an error during the database operation.
-    async fn get_all_source_checksums(&self) -> Result<Vec<StoreSourceFileChecksum>>;
-
-    /// Retrieves all destination checksums from the store database.
-    ///
-    /// # Errors
-    /// Returns an error if there's an error during the database operation.
-    async fn get_all_target_checksums(&self) -> Result<Vec<StoreTargetFileChecksum>>;
-
     // --
     // * Backups
 
@@ -227,20 +216,21 @@ pub(crate) trait Store {
     /// Get all packages installed by all other modules
     async fn get_all_other_module_packages<S: AsRef<str>>(&self, module: S) -> Result<Vec<String>>;
 
-    /// Get all packages installed
-    async fn get_all_packages(&self) -> Result<Vec<String>>;
+    // --
+    // * Tasks
+
+    async fn get_task_uuids<S: AsRef<str>>(&self, module: S) -> Result<Vec<Uuid>>;
+
+    async fn add_task(&self, data: PhaseTask) -> Result<()>;
+
+    async fn get_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<PhaseTask>>;
+
+    async fn get_task(&self, uuid: Uuid) -> Result<Option<PhaseTask>>;
+
+    async fn remove_task(&self, uuid: Uuid) -> Result<()>;
 
     // --
-    // * Removal & Updates
-
-    // FIXME 2025-03-22: All of this is pretty redundant and can probably be implemented similar to
-    //   https://users.rust-lang.org/t/limit-a-generic-type-to-be-either-a-or-b/66367/7
-    async fn cache_command<S: AsRef<str>>(&self, phase: S, data: DeployPhaseStruct) -> Result<()>;
-
-    async fn get_cached_commands<S: AsRef<str>>(
-        &self,
-        phase: S,
-    ) -> Result<Option<DeployPhaseStruct>>;
+    // * Messages
 
     async fn cache_message<S: AsRef<str>>(&self, command: S, message: CommandMessage)
     -> Result<()>;

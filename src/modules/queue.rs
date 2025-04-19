@@ -4,11 +4,11 @@ use crate::modules::files::ModuleFile;
 use crate::modules::generate_file::Generate;
 use crate::modules::messages::CommandMessage;
 use crate::modules::packages::InstallPackage;
-use crate::modules::tasks::ModuleTask;
+use crate::modules::tasks::{ModuleTask, TaskDefinition};
 use crate::modules::{DotdeployModule, DotdeployModuleBuilder};
-use crate::phases::DeployPhaseStruct;
 use crate::phases::file::PhaseFileBuilder;
-use crate::phases::task::{PhaseHook, PhaseTask};
+use crate::phases::task::{PhaseHook, PhaseTask, PhaseTaskDefinition};
+use crate::phases::{DeployPhaseFiles, DeployPhaseTasks};
 use crate::store::Store;
 use crate::store::sqlite::SQLiteStore;
 use crate::utils::FileUtils;
@@ -34,11 +34,9 @@ pub(crate) struct ModulesQueue {
     pub(crate) modules: Vec<DotdeployModule>,
 }
 
-type Phases<'a> = (
-    &'a Arc<Mutex<DeployPhaseStruct>>,
-    &'a Arc<Mutex<DeployPhaseStruct>>,
-    &'a Arc<Mutex<DeployPhaseStruct>>,
-    &'a Arc<Mutex<DeployPhaseStruct>>,
+type PhasesFiles<'a> = (
+    &'a Arc<Mutex<DeployPhaseFiles>>,
+    &'a Arc<Mutex<DeployPhaseFiles>>,
 );
 
 impl ModulesQueue {
@@ -120,6 +118,7 @@ impl ModulesQueue {
         Ok(())
     }
 
+    // TODO 2025-04-17: Update docstring
     /// Processes all modules to generate deployment phase structures
     ///
     /// Transforms module configurations into executable deployment phases:
@@ -147,23 +146,25 @@ impl ModulesQueue {
         store: Arc<SQLiteStore>,
         pm: Arc<PrivilegeManager>,
     ) -> Result<(
-        DeployPhaseStruct,
-        DeployPhaseStruct,
-        DeployPhaseStruct,
-        DeployPhaseStruct,
+        DeployPhaseFiles,
+        DeployPhaseFiles,
+        DeployPhaseTasks,
         Vec<InstallPackage>,
         Vec<Generate>,
         Vec<CommandMessage>,
     )> {
-        // Initialize phase containers for each deployment stage
+        // Initialize file containers for each deployment stage
+        // - setup: files needed for preparation before deployment
+        // - config: files needed for post-deployment configuration
+        let setup_phase_files = Arc::new(Mutex::new(DeployPhaseFiles::default()));
+        let config_phase_files = Arc::new(Mutex::new(DeployPhaseFiles::default()));
+
+        // Initialize task container
         // - setup: preparation tasks before deployment
         // - config: post-deployment configuration
         // - update: post-deployment updates
-        // - remove: deployment removal configuration
-        let setup_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
-        let config_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
-        let update_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
-        let remove_phase = Arc::new(Mutex::new(DeployPhaseStruct::default()));
+        // - remove: deployment removal
+        let tasks_container = Arc::new(Mutex::new(DeployPhaseTasks::default()));
 
         // Initialize messages container
         let messages = Arc::new(Mutex::new(Vec::new()));
@@ -177,10 +178,9 @@ impl ModulesQueue {
         let mut set: JoinSet<Result<(), Report>> = JoinSet::new();
 
         while let Some(mut module) = self.modules.pop() {
-            let setup_phase = Arc::clone(&setup_phase);
-            let config_phase = Arc::clone(&config_phase);
-            let update_phase = Arc::clone(&update_phase);
-            let remove_phase = Arc::clone(&remove_phase);
+            let setup_phase_files = Arc::clone(&setup_phase_files);
+            let config_phase_files = Arc::clone(&config_phase_files);
+            let tasks_container = Arc::clone(&tasks_container);
             let seen_files = Arc::clone(&seen_files);
             let config = Arc::clone(&config);
             let store = Arc::clone(&store);
@@ -190,7 +190,7 @@ impl ModulesQueue {
             let packages = Arc::clone(&packages);
 
             set.spawn(async move {
-                let phases: Phases = (&setup_phase, &config_phase, &update_phase, &remove_phase);
+                let phases: PhasesFiles = (&setup_phase_files, &config_phase_files);
 
                 if let Some(files) = module.files.take() {
                     // Process files based on their phase
@@ -207,7 +207,7 @@ impl ModulesQueue {
                 };
 
                 if let Some(tasks) = module.tasks.take() {
-                    Self::process_tasks(tasks, &mut module, phases).await?;
+                    Self::process_tasks(tasks, &mut module, tasks_container).await?;
                 };
 
                 if let Some(module_messages) = module.messages.take() {
@@ -227,12 +227,11 @@ impl ModulesQueue {
                 }
 
                 if let Some(file_gens) = module.generators.take() {
-                    // FIXME 2025-03-20: This should be possible to solve more elegantly.
-                    let mut new_fgens = Vec::new();
+                    let mut fgens = Vec::with_capacity(file_gens.len());
                     for fg in file_gens.into_iter() {
                         let mut target = fg.target;
                         target = Self::expand_target_path(&target, &module).await?;
-                        new_fgens.push(Generate {
+                        fgens.push(Generate {
                             target,
                             source: fg.source,
                             shebang: fg.shebang,
@@ -246,12 +245,11 @@ impl ModulesQueue {
                     file_generators
                         .lock()
                         .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                        .append(&mut new_fgens)
+                        .append(&mut fgens)
                 }
 
                 if let Some(module_packages) = module.packages.take() {
                     for pkgs in module_packages.into_iter() {
-                        // FIXME 2025-03-21: Now we have to handle an empty string in the packages
                         if pkgs.install.is_empty() {
                             packages
                                 .lock()
@@ -281,16 +279,13 @@ impl ModulesQueue {
         crate::errors::join_errors(set.join_all().await)?;
 
         Ok((
-            Arc::try_unwrap(setup_phase)
+            Arc::try_unwrap(setup_phase_files)
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
-            Arc::try_unwrap(config_phase)
+            Arc::try_unwrap(config_phase_files)
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
-            Arc::try_unwrap(update_phase)
-                .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
-                .into_inner()?,
-            Arc::try_unwrap(remove_phase)
+            Arc::try_unwrap(tasks_container)
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
             Arc::try_unwrap(packages)
@@ -328,13 +323,13 @@ impl ModulesQueue {
     async fn process_files(
         files: Vec<ModuleFile>,
         module: &mut DotdeployModule,
-        phases: Phases<'_>,
+        phases: PhasesFiles<'_>,
         config: &Arc<DotdeployConfig>,
         store: Arc<SQLiteStore>,
         pm: Arc<PrivilegeManager>,
         seen_files: &Arc<Mutex<HashSet<PathBuf>>>,
     ) -> Result<()> {
-        let (setup_phase, config_phase, _, _) = phases;
+        let (setup_phase, config_phase) = phases;
 
         let mut phase_files = vec![];
         let mut deployed_files = store.get_all_files(&module.name).await?;
@@ -402,7 +397,7 @@ impl ModulesQueue {
                 // Create PhaseFile for each expanded pair
                 for (expanded_source, expanded_target) in expanded_pairs {
                     let expanded_target = PathBuf::from(bytes_to_os_str(
-                        &expanded_target
+                        expanded_target
                             .as_os_str()
                             .as_bytes()
                             .replace("##dot##", "."),
@@ -460,7 +455,7 @@ impl ModulesQueue {
                         .with_module_name(&module.name)
                         .with_source(source.as_ref().map(PathBuf::from))
                         .with_target(PathBuf::from(bytes_to_os_str(
-                            &target.as_os_str().as_bytes().replace("##dot##", "."),
+                            target.as_os_str().as_bytes().replace("##dot##", "."),
                         )))
                         .with_content(content)
                         .with_operation(operation)
@@ -526,7 +521,9 @@ impl ModulesQueue {
                         store.remove_file(&target).await?;
 
                         // Delete potentially empty directories
-                        file_utils.delete_parents(&target, config.noconfirm, Some(guard)).await?;
+                        file_utils
+                            .delete_parents(&target, config.noconfirm, Some(guard))
+                            .await?;
                         Ok::<_, Report>(())
                     }
                 });
@@ -649,6 +646,7 @@ impl ModulesQueue {
         }
     }
 
+    // TODO 2025-04-16: Update docstring
     /// Processes module tasks and distributes them to appropriate deployment phases
     ///
     /// This function:
@@ -670,69 +668,71 @@ impl ModulesQueue {
     async fn process_tasks(
         tasks: Vec<ModuleTask>,
         module: &mut DotdeployModule,
-        phases: Phases<'_>,
+        container: Arc<Mutex<DeployPhaseTasks>>,
     ) -> Result<()> {
-        let (setup_phase, config_phase, update_phase, remove_phase) = phases;
+        let mut result = Vec::with_capacity(tasks.len());
 
         for task in tasks {
             let ModuleTask {
-                shell,
-                exec,
-                args,
-                expand_args,
-                sudo,
-                phase,
-                hook,
+                setup,
+                config,
+                update,
+                remove,
+                description,
                 condition: _,
             } = task;
 
-            let phase_task = PhaseTask {
-                module_name: module.name.clone(),
-                shell,
-                exec: exec
-                    .map(|x| {
-                        let mut env = HashMap::new();
-                        env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
-                        file_fs::expand_path(&x, Some(&env)).map_err(|e| {
-                            eyre!("Failed to expand path '{}': {:?}", x.to_string_lossy(), e)
-                        })
-                    })
-                    .transpose()?
-                    .map(PathBuf::into_os_string),
-                args,
-                expand_args: expand_args.ok_or_eyre("expand_args field required")?,
-                sudo: sudo.ok_or_eyre("sudo field required")?,
-                hook: match hook.as_deref() {
-                    Some("pre") => PhaseHook::Pre,
-                    Some("post") => PhaseHook::Post,
-                    _ => unreachable!(),
-                },
+            let convert_task = |task: Vec<TaskDefinition>,
+                                module: &mut DotdeployModule|
+             -> Result<Vec<PhaseTaskDefinition>> {
+                let mut ret = Vec::with_capacity(task.len());
+                for t in task.into_iter() {
+                    ret.push(PhaseTaskDefinition {
+                        shell: t.shell,
+                        exec: t
+                            .exec
+                            .map(|x| {
+                                let mut env = HashMap::new();
+                                env.insert("DOD_CURRENT_MODULE".to_string(), &module.location);
+                                file_fs::expand_path(&x, Some(&env)).map_err(|e| {
+                                    eyre!(
+                                        "Failed to expand path '{}': {:?}",
+                                        x.to_string_lossy(),
+                                        e
+                                    )
+                                })
+                            })
+                            .transpose()?
+                            .map(PathBuf::into_os_string),
+                        args: t.args,
+                        expand_args: t.expand_args.ok_or_eyre("expand_args field required")?,
+                        sudo: t.sudo.ok_or_eyre("sudo field required")?,
+                        hook: match t.hook.as_deref() {
+                            Some("pre") => PhaseHook::Pre,
+                            Some("post") => PhaseHook::Post,
+                            _ => unreachable!(),
+                        },
+                    });
+                }
+                Ok(ret)
             };
 
-            match phase {
-                DeployPhase::Setup => setup_phase
-                    .lock()
-                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                    .tasks
-                    .push(phase_task),
-                DeployPhase::Config => config_phase
-                    .lock()
-                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                    .tasks
-                    .push(phase_task),
-                DeployPhase::Update => update_phase
-                    .lock()
-                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                    .tasks
-                    .push(phase_task),
-                DeployPhase::Remove => remove_phase
-                    .lock()
-                    .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                    .tasks
-                    .push(phase_task),
-                // other => return Err(eyre!("Invalid phase specified: {:?}", other)),
-            }
+            let phase_task = PhaseTask {
+                module_name: module.name.clone(),
+                setup: convert_task(setup, module)?,
+                config: convert_task(config, module)?,
+                update: convert_task(update, module)?,
+                remove: convert_task(remove, module)?,
+                description,
+            };
+            result.push(phase_task);
         }
+
+        container
+            .lock()
+            .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
+            .tasks
+            .append(&mut result);
         Ok(())
     }
 }

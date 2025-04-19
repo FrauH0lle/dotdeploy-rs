@@ -1,8 +1,9 @@
 use crate::cmds::common;
 use crate::config::DotdeployConfig;
 use crate::errors;
+use crate::modules::DeployPhase;
 use crate::modules::queue::ModulesQueueBuilder;
-use crate::phases::DeployPhaseStruct;
+use crate::phases::DeployPhaseTasks;
 use crate::store::Store;
 use crate::store::sqlite::SQLiteStore;
 use crate::utils::FileUtils;
@@ -129,28 +130,35 @@ pub(crate) async fn remove(
         return Ok(false);
     }
 
-    // FIXME 2025-03-23: Update command cache for removal AND update. Remove deleted modules.
-    let mut tasks =
-        if let Some(mut cached_remove_tasks) = store.get_cached_commands("remove").await? {
-            cached_remove_tasks
-                .tasks
-                .retain(|t| full_modules.contains(&t.module_name));
-            cached_remove_tasks
-        } else {
-            DeployPhaseStruct {
-                files: vec![],
-                tasks: vec![],
-            }
-        };
+    let mut set = JoinSet::new();
+    for module in full_modules.into_iter() {
+        let store = Arc::clone(&store);
+        set.spawn(async move {
+            let tasks = store.get_tasks(&module).await?;
+            Ok((module, tasks))
+        });
+    }
+    let (mut full_modules, tasks): (HashSet<_>, Vec<_>) =
+        errors::join_errors(set.join_all().await)?
+            .into_iter()
+            .unzip();
+    let mut tasks = DeployPhaseTasks {
+        tasks: tasks.into_iter().flatten().collect(),
+    };
 
     // Pre hook
-    tasks.exec_pre_tasks(&pm, &config).await?;
+    tasks
+        .exec_pre_tasks(&pm, &config, DeployPhase::Remove)
+        .await?;
 
     // Remove packages
     if config.remove_pkg_cmd.is_some() {
         let mut set = JoinSet::new();
 
-        for m in full_modules.into_iter().filter(|m| m.as_str() != "__dotdeploy_generated") {
+        for m in full_modules
+            .into_iter()
+            .filter(|m| m.as_str() != "__dotdeploy_generated")
+        {
             set.spawn({
                 let store = Arc::clone(&store);
                 async move {
@@ -206,7 +214,9 @@ pub(crate) async fn remove(
                     store.restore_backup(&target, &target).await?;
                     store.remove_backup(&target).await?;
                 }
-                file_utils.delete_parents(&target, config.noconfirm, Some(guard)).await?;
+                file_utils
+                    .delete_parents(&target, config.noconfirm, Some(guard))
+                    .await?;
 
                 // Delete potentially empty directories
                 Ok::<_, Report>(())
@@ -216,28 +226,13 @@ pub(crate) async fn remove(
     errors::join_errors(set.join_all().await)?;
 
     // Post hook
-    tasks.exec_post_tasks(&pm, &config).await?;
+    tasks
+        .exec_post_tasks(&pm, &config, DeployPhase::Remove)
+        .await?;
 
     // Drop modules from the store
     for m in full_modules.iter() {
         store.remove_module(&m).await?;
-    }
-
-    // Update command cache
-    for cmd in ["remove", "update"] {
-        let cached_tasks = if let Some(mut cached_tasks) = store.get_cached_commands(cmd).await? {
-            cached_tasks
-                .tasks
-                .retain(|t| !full_modules.contains(&t.module_name));
-            cached_tasks
-        } else {
-            DeployPhaseStruct {
-                files: vec![],
-                tasks: vec![],
-            }
-        };
-
-        store.cache_command(cmd, cached_tasks).await?;
     }
 
     // Update generated files
@@ -266,7 +261,7 @@ pub(crate) async fn remove(
             .wrap_err("Failed to collect context")?;
         mod_queue.finalize(&mut context, &handlebars)?;
 
-        let (_, _, _, _, _, file_generators, _) = mod_queue
+        let (_, _, _, _, file_generators, _) = mod_queue
             .process(Arc::clone(&config), Arc::clone(&store), Arc::clone(&pm))
             .await?;
 
@@ -289,6 +284,21 @@ pub(crate) async fn remove(
         }
         errors::join_errors(set.join_all().await)?;
         debug!("Generating files complete");
+    }
+
+    for m in full_modules.iter() {
+        let msgs = store.get_all_cached_messages(m.as_str(), "update").await;
+
+        if let Ok(msgs) = msgs {
+            for msg in msgs.into_iter() {
+                match msg.on_command.as_deref() {
+                    Some("remove") => {
+                        info!("Message for {}:\n{}", msg.module_name, msg.message)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
     }
 
     Ok(true)

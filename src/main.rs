@@ -324,56 +324,31 @@ async fn run(
 
     let cmd_result = match cli.command {
         cli::Commands::Deploy { modules, host } => {
-            let modules = if host {
-                vec![["hosts", config.hostname.as_str()].join("/")]
-            } else if let Some(modules) = modules {
-                modules
-            } else {
-                let mut deployed_modules = store.get_all_modules().await?;
-                if !deployed_modules.is_empty() {
-                    deployed_modules.retain(|m| m.reason.as_str() == "manual");
-                    deployed_modules
-                        .into_iter()
-                        .map(|m| m.name)
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                }
-            };
+            let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
 
             if modules.is_empty() {
-                error!("No modules specified or found in store");
                 return Ok((false, false));
             }
-            cmds::deploy::deploy(
+            cmds::sync::sync(
                 modules,
                 config,
+                vec![
+                    cli::SyncComponent::Files,
+                    cli::SyncComponent::Tasks,
+                    cli::SyncComponent::Packages,
+                ],
                 Arc::clone(&store),
                 context,
                 handlebars,
                 Arc::clone(&pm),
             )
             .await
+                
         }
         cli::Commands::Remove { modules, host } => {
-            let modules = if host {
-                vec![["hosts", config.hostname.as_str()].join("/")]
-            } else if let Some(modules) = modules {
-                modules
-            } else {
-                let deployed_modules = store.get_all_modules().await?;
-                if !deployed_modules.is_empty() {
-                    deployed_modules
-                        .into_iter()
-                        .map(|m| m.name)
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                }
-            };
+            let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
 
             if modules.is_empty() {
-                error!("No modules specified or found in store");
                 return Ok((false, false));
             }
             cmds::remove::remove(
@@ -390,7 +365,29 @@ async fn run(
             cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
         }
         cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
-        cli::Commands::Sync { auto: _ } => todo!(),
+        cli::Commands::Sync(sync_args) => {
+            let modules = get_selected_modules(
+                sync_args.host,
+                sync_args.modules,
+                &config,
+                Arc::clone(&store),
+            )
+            .await?;
+
+            if modules.is_empty() {
+                return Ok((false, false));
+            }
+            cmds::sync::sync(
+                modules,
+                config,
+                sync_args.components,
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        }
         cli::Commands::Validate { diff: _, fix: _ } => todo!(),
         cli::Commands::Nuke { really: _ } => todo!(),
         cli::Commands::Completions { shell, out } => {
@@ -425,4 +422,26 @@ async fn run(
 
     let loop_running = pm.loop_running.load(Ordering::Relaxed);
     Ok((cmd_result?, loop_running))
+}
+
+async fn get_selected_modules(
+    host: bool,
+    modules: Option<Vec<String>>,
+    config: &config::DotdeployConfig,
+    store: Arc<store::sqlite::SQLiteStore>,
+) -> Result<Vec<String>> {
+    if host {
+        Ok(vec![format!("hosts/{}", config.hostname)])
+    } else if let Some(modules) = modules {
+        Ok(modules)
+    } else {
+        let mut deployed_modules = store.get_all_modules().await?;
+        if !deployed_modules.is_empty() {
+            deployed_modules.retain(|m| m.reason.as_str() == "manual");
+            Ok(deployed_modules.into_iter().map(|m| m.name).collect())
+        } else {
+            error!("No modules specified or found in store");
+            Ok(vec![])
+        }
+    }
 }

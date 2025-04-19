@@ -5,7 +5,7 @@
 //! * `Commands` - Subcommands and their specific parameters
 //! * `get_cli` - Primary entry point for CLI parsing
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use std::{ffi::OsString, path::PathBuf};
 
@@ -102,6 +102,75 @@ pub(crate) struct Cli {
     pub(crate) logs_max: Option<usize>,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+pub(crate) enum SyncComponent {
+    #[value(name = "files")]
+    Files,
+    #[value(name = "tasks")]
+    Tasks,
+    #[value(name = "packages")]
+    Packages,
+    #[value(name = "all")]
+    All,
+}
+
+impl SyncComponent {
+    /// Returns `true` if the sync component is [`All`].
+    ///
+    /// [`All`]: SyncComponent::All
+    #[must_use]
+    pub(crate) fn is_all(&self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// Returns `true` if the sync component is [`Packages`].
+    ///
+    /// [`Packages`]: SyncComponent::Packages
+    #[must_use]
+    pub(crate) fn is_packages(&self) -> bool {
+        matches!(self, Self::Packages)
+    }
+
+    /// Returns `true` if the sync component is [`Tasks`].
+    ///
+    /// [`Tasks`]: SyncComponent::Tasks
+    #[must_use]
+    pub(crate) fn is_tasks(&self) -> bool {
+        matches!(self, Self::Tasks)
+    }
+
+    /// Returns `true` if the sync component is [`Files`].
+    ///
+    /// [`Files`]: SyncComponent::Files
+    #[must_use]
+    pub(crate) fn is_files(&self) -> bool {
+        matches!(self, Self::Files)
+    }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SyncArgs {
+    /// Components to sync
+    #[clap(
+        value_name = "COMPONENT",
+        // Components are mandatory
+        required = true,
+        // Must provide at least one component value
+        num_args = 1..,
+    )]
+    pub(crate) components: Vec<SyncComponent>,
+
+    /// Sync the host module
+    // Can't use --host and specific modules together
+    #[clap(long, conflicts_with = "modules")]
+    pub(crate) host: bool,
+
+    /// Optional list of module names to sync
+    // Require at least one module
+    #[clap(value_name = "MODULE", num_args = 1.., last = true)]
+    pub(crate) modules: Option<Vec<String>>,
+}
+
 /// Available subcommands for dotdeploy
 #[derive(Subcommand)]
 pub(crate) enum Commands {
@@ -110,7 +179,7 @@ pub(crate) enum Commands {
         /// Optional list of module names to deploy
         modules: Option<Vec<String>>,
         /// Deploy the host module
-        #[clap(long)]
+        #[clap(long, conflicts_with = "modules")]
         host: bool,
     },
 
@@ -119,7 +188,7 @@ pub(crate) enum Commands {
         /// Optional list of module names to remove
         modules: Option<Vec<String>>,
         /// Remove the host module
-        #[clap(long)]
+        #[clap(long, conflicts_with = "modules")]
         host: bool,
     },
 
@@ -129,12 +198,8 @@ pub(crate) enum Commands {
         modules: Option<Vec<String>>,
     },
 
-    /// Synchronize deployed files with their sources
-    Sync {
-        /// Automatically sync without asking
-        #[clap(long)]
-        auto: bool,
-    },
+    /// Synchronize modules
+    Sync(SyncArgs),
 
     /// Validate deployment state and check for differences
     Validate {

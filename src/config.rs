@@ -316,7 +316,7 @@ impl DotdeployConfigBuilder {
     /// * Permission is denied
     fn read_config_file(&self, path: &Path) -> Result<String> {
         // Read and return the contents of the config file
-        let config_file_content: String = std::fs::read_to_string(&path)
+        let config_file_content: String = std::fs::read_to_string(path)
             .wrap_err_with(|| format!("Failed to read config from {}", path.display()))?;
 
         Ok(config_file_content)

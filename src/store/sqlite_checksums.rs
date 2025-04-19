@@ -84,15 +84,6 @@ mod tests {
         let result = store.get_source_checksum("/home/foo2.txt").await?;
         assert_eq!(result, StoreSourceFileChecksum::new::<PathBuf>(None, None));
 
-        // All checksums
-        let store = store_setup_helper("create").await?;
-        let result = store.get_all_source_checksums().await?;
-        assert_eq!(result.len(), 0);
-
-        let store = store_setup_helper("create").await?;
-        let result = store.get_all_target_checksums().await?;
-        assert_eq!(result.len(), 5);
-
         Ok(())
     }
 }

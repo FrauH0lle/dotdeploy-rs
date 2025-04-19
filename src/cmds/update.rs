@@ -1,10 +1,14 @@
 use crate::config::DotdeployConfig;
+use crate::errors;
+use crate::modules::DeployPhase;
+use crate::phases::DeployPhaseTasks;
 use crate::store::Store;
 use crate::store::sqlite::SQLiteStore;
 use crate::utils::sudo::PrivilegeManager;
 use color_eyre::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::task::JoinSet;
 use tracing::info;
 
 /// Update deployed modules and execute maintenance tasks
@@ -39,13 +43,23 @@ pub(crate) async fn update(
             .collect::<HashSet<_>>()
     };
 
-    if let Some(mut cached_update_tasks) = store.get_cached_commands("update").await? {
-        cached_update_tasks
-            .tasks
-            .retain(|t| modules.contains(&t.module_name));
-        cached_update_tasks.exec_pre_tasks(&pm, &config).await?;
-        cached_update_tasks.exec_post_tasks(&pm, &config).await?;
+    let mut set = JoinSet::new();
+    for module in modules.into_iter() {
+        let store = Arc::clone(&store);
+        set.spawn(async move {
+            let tasks = store.get_tasks(&module).await?;
+            Ok((module, tasks))
+        });
     }
+    let (modules, tasks): (HashSet<_>, Vec<_>) = errors::join_errors(set.join_all().await)?
+        .into_iter()
+        .unzip();
+    let mut tasks = DeployPhaseTasks {
+        tasks: tasks.into_iter().flatten().collect(),
+    };
+
+    tasks.exec_pre_tasks(&pm, &config, DeployPhase::Update).await?;
+    tasks.exec_post_tasks(&pm, &config, DeployPhase::Update).await?;
 
     for m in modules {
         let msgs = store.get_all_cached_messages(m.as_str(), "update").await;

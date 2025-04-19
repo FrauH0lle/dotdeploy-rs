@@ -110,3 +110,32 @@ skip_pkg_install = false
 # Maximum number of log files to retain
 logs_max = 15
 ```
+
+## Module configuration
+
+### Tasks
+
+``` toml
+[[tasks]]
+description = "Install and maintain tealdear"
+[[tasks.on_deploy]]
+shell = """
+if [ ! -f $XDG_BIN_HOME/tldr ]; then
+  wget -O $XDG_BIN_HOME/tldr https://github.com/tealdeer-rs/tealdeer/releases/latest/download/tealdeer-linux-x86_64-musl
+  chmod +x $XDG_BIN_HOME/tldr
+fi
+"""
+[[tasks.on_update]]
+shell = """
+wget -O $XDG_BIN_HOME/tldr https://github.com/tealdeer-rs/tealdeer/releases/latest/download/tealdeer-linux-x86_64-musl
+chmod +x $XDG_BIN_HOME/tldr
+"""
+[[tasks.on_remove]]
+shell = """
+rm  -f $XDG_BIN_HOME/tldr
+"""
+```
+* `on_remove` will run when the module gets removed but also when 
+  1. the task definition changes
+  2. the task is removed from the module configuration
+  

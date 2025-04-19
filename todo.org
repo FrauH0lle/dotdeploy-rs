@@ -52,8 +52,6 @@
 
 * DONE Use derive_builder for ALL THE BUILDER PATTERNS!
 - Replace all ~..::new()~ methods with a builder
-* TODO ~sync~ subcommand
+* DONE ~sync~ subcommand
 - allow further subcommands files, tasks, packages, generate which can be
   combined. ~deploy~ becomes then sync with all subcommands.
-* TODO ~redeploy~ subcommand
-- remove and deploy a module and keep its install reason. Also allow to skip packages.

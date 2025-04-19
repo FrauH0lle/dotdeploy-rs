@@ -1,4 +1,5 @@
 use crate::config::DotdeployConfig;
+use crate::modules::DeployPhase;
 use crate::phases::file::PhaseFile;
 use crate::phases::task::PhaseTask;
 use crate::store::sqlite::SQLiteStore;
@@ -11,17 +12,22 @@ use std::sync::Arc;
 use task::PhaseHook;
 use tokio::task::JoinSet;
 use toml::Value;
+use tracing::debug;
 
 pub(crate) mod file;
 pub(crate) mod task;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-pub(crate) struct DeployPhaseStruct {
+pub(crate) struct DeployPhaseFiles {
     pub(crate) files: Vec<PhaseFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub(crate) struct DeployPhaseTasks {
     pub(crate) tasks: Vec<PhaseTask>,
 }
 
-impl DeployPhaseStruct {
+impl DeployPhaseFiles {
     pub(crate) async fn deploy_files(
         &mut self,
         pm: Arc<PrivilegeManager>,
@@ -48,14 +54,19 @@ impl DeployPhaseStruct {
 
         Ok(())
     }
+}
 
+impl DeployPhaseTasks {
     pub(crate) async fn exec_pre_tasks(
         &mut self,
         pm: &PrivilegeManager,
         config: &DotdeployConfig,
+        phase: DeployPhase,
     ) -> Result<()> {
-        for task in self.tasks.iter().filter(|t| t.hook == PhaseHook::Pre) {
-            task.exec(pm, config).await?;
+        debug!("{:?} phase, running {:?}-hook", phase, PhaseHook::Pre);
+
+        for task in self.tasks.iter() {
+            task.exec(pm, config, &phase, PhaseHook::Pre).await?;
         }
 
         Ok(())
@@ -65,9 +76,12 @@ impl DeployPhaseStruct {
         &mut self,
         pm: &PrivilegeManager,
         config: &DotdeployConfig,
+        phase: DeployPhase,
     ) -> Result<()> {
-        for task in self.tasks.iter().filter(|t| t.hook == PhaseHook::Post) {
-            task.exec(pm, config).await?;
+        debug!("{:?} phase, running {:?}-hook", phase, PhaseHook::Post);
+
+        for task in self.tasks.iter() {
+            task.exec(pm, config, &phase, PhaseHook::Post).await?;
         }
 
         Ok(())

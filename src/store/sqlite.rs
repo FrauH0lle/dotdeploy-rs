@@ -1,6 +1,6 @@
 use crate::config::DotdeployConfig;
 use crate::modules::messages::CommandMessage;
-use crate::store::DeployPhaseStruct;
+use crate::phases::task::PhaseTask;
 use crate::store::sqlite_backups::StoreBackupBuilder;
 use crate::store::sqlite_checksums::{StoreSourceFileChecksum, StoreTargetFileChecksum};
 use crate::store::sqlite_files::StoreFile;
@@ -13,11 +13,11 @@ use crate::utils::sudo::PrivilegeManager;
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use sqlx::sqlite;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Representation of the store database
 #[derive(Clone, Debug)]
@@ -593,31 +593,6 @@ WHERE modules.name = ?1
         )
     }
 
-    async fn get_all_source_checksums(&self) -> Result<Vec<StoreSourceFileChecksum>> {
-        let res = sqlx::query!("SELECT source_u8, source_checksum FROM files")
-            .fetch_all(&self.pool)
-            .await?;
-
-        // Filter out records where both source and source_checksum are None
-        Ok(res
-            .into_iter()
-            .filter(|r| r.source_u8.is_some() || r.source_checksum.is_some())
-            .map(|r| {
-                StoreSourceFileChecksum::new(r.source_u8.map(bytes_to_os_str), r.source_checksum)
-            })
-            .collect())
-    }
-
-    async fn get_all_target_checksums(&self) -> Result<Vec<StoreTargetFileChecksum>> {
-        let res = sqlx::query!("SELECT target_u8, target_checksum FROM files")
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(res
-            .into_iter()
-            .map(|r| StoreTargetFileChecksum::new(bytes_to_os_str(r.target_u8), r.target_checksum))
-            .collect())
-    }
-
     // --
     // * Packages
 
@@ -707,40 +682,44 @@ VALUES (?1, ?2)
         Ok(rows.into_iter().map(|r| r.name).collect())
     }
 
-    async fn get_all_packages(&self) -> Result<Vec<String>> {
-        let rows = sqlx::query!("SELECT name FROM packages")
-            .fetch_all(&self.pool)
-            .await?;
+    // --
+    // * Tasks
 
-        // Filter duplicates and return packaages
-        let mut seen = HashSet::new();
-        Ok(rows
-            .into_iter()
-            .filter(|x| seen.insert(x.name.clone()))
-            .map(|x| x.name)
-            .collect::<Vec<_>>())
+    async fn get_task_uuids<S: AsRef<str>>(&self, module: S) -> Result<Vec<Uuid>> {
+        let module = module.as_ref();
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_one(&self.pool)
+            .await?
+            .id;
+
+        let uuids = sqlx::query!(
+            "SELECT uuid as \"uuid: Uuid\" FROM tasks WHERE module_id = ?1",
+            module_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(uuids.into_iter().map(|r| r.uuid).collect::<Vec<Uuid>>())
     }
 
-    // --
-    // * Removal & Updates
-
-    async fn cache_command<S: AsRef<str>>(
-        &self,
-        command: S,
-        data: DeployPhaseStruct,
-    ) -> Result<()> {
-        let command = command.as_ref();
+    async fn add_task(&self, data: PhaseTask) -> Result<()> {
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", data.module_name)
+            .fetch_one(&self.pool)
+            .await?
+            .id;
+        let uuid = data.calculate_uuid().await?;
         let data = serde_json::to_string(&data)?;
 
         sqlx::query!(
             r#"
-INSERT INTO command_cache (command, data)
-VALUES (?1, ?2)
-ON CONFLICT(command)
+INSERT INTO tasks (module_id, uuid, data)
+VALUES (?1, ?2, ?3)
+ON CONFLICT(uuid)
 DO UPDATE SET data=excluded.data;
             "#,
-            command,
-            data,
+            module_id,
+            uuid,
+            data
         )
         .execute(&self.pool)
         .await?;
@@ -748,23 +727,45 @@ DO UPDATE SET data=excluded.data;
         Ok(())
     }
 
-    async fn get_cached_commands<S: AsRef<str>>(
-        &self,
-        command: S,
-    ) -> Result<Option<DeployPhaseStruct>> {
-        let command = command.as_ref();
+    async fn get_tasks<S: AsRef<str>>(&self, module: S) -> Result<Vec<PhaseTask>> {
+        let module = module.as_ref();
+        let module_id = sqlx::query!("SELECT id FROM modules WHERE name = ?1", module)
+            .fetch_one(&self.pool)
+            .await?
+            .id;
 
-        let data = sqlx::query!("SELECT data FROM command_cache WHERE command = ?1", command)
+        let tasks = sqlx::query!("SELECT data FROM tasks WHERE module_id = ?1", module_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut result = Vec::with_capacity(tasks.len());
+        for task in tasks.into_iter() {
+            result.push(serde_json::from_str(task.data.as_str())?);
+        }
+        Ok(result)
+    }
+
+    async fn get_task(&self, uuid: Uuid) -> Result<Option<PhaseTask>> {
+        let task = sqlx::query!("SELECT data FROM tasks WHERE uuid = ?1", uuid)
             .fetch_optional(&self.pool)
             .await?;
 
-        if let Some(data) = data {
-            let data = serde_json::from_str(data.data.as_str())?;
-            Ok(data)
+        if let Some(task) = task {
+            Ok(Some(serde_json::from_str(task.data.as_str())?))
         } else {
             Ok(None)
         }
     }
+
+    async fn remove_task(&self, uuid: Uuid) -> Result<()> {
+        sqlx::query!("DELETE FROM tasks WHERE uuid = ?1", uuid)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // --
+    // * Messages
 
     async fn cache_message<S: AsRef<str>>(
         &self,

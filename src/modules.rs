@@ -71,12 +71,12 @@ pub(crate) enum DeployPhase {
 /// Supports two inclusion formats:
 /// - `Simple`: Direct path to a TOML file
 /// - `Conditional`: Map with file list and template condition
-/// 
+///
 /// # Examples
 /// ```toml
 /// includes = [
 ///     "base_config.toml",
-///     { files = ["conditional.toml"], if = "{{environment.prod}}" }
+///     { files = ["conditional.toml"], if = "(eq DOD_DISTRIBUTION_NAME 'ubuntu')" }
 /// ]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,18 +318,26 @@ impl DotdeployModule {
         // Validate tasks
         if let Some(ref tasks) = self.tasks {
             for task in tasks.iter() {
-                if task.shell.is_some() & task.exec.is_some() {
-                    let command_display = match (&task.shell, &task.exec) {
-                        (Some(shell), _) => shell,
-                        (_, Some(exec)) => exec,
-                        _ => &OsString::from("<unknown>"), // This shouldn't happen due to the condition above
-                    };
+                for task_def in task
+                    .setup
+                    .iter()
+                    .chain(task.config.iter())
+                    .chain(task.remove.iter())
+                    .chain(task.update.iter())
+                {
+                    if task_def.shell.is_some() & task_def.exec.is_some() {
+                        let command_display = match (&task_def.shell, &task_def.exec) {
+                            (Some(shell), _) => shell,
+                            (_, Some(exec)) => exec,
+                            _ => &OsString::from("<unknown>"), // This shouldn't happen due to the condition above
+                        };
 
-                    return Err(eyre!(
-                        "{}:command={}\n A task can be either a shell command OR an executable",
-                        &self.location.display(),
-                        command_display.to_string_lossy()
-                    ));
+                        return Err(eyre!(
+                            "{}:command={}\n A task can be either a shell command OR an executable",
+                            &self.location.display(),
+                            command_display.to_string_lossy()
+                        ));
+                    }
                 }
             }
         }
@@ -357,6 +365,34 @@ impl DotdeployModule {
         retain_components!(self, files, context, hb);
         // Filter tasks based on their execution conditions
         retain_components!(self, tasks, context, hb);
+        if let Some(ref mut tasks) = self.tasks {
+            for task in tasks {
+                task.setup.retain(|t| {
+                    t.eval_condition(context, hb).unwrap_or_else(|err| {
+                        t.log_error(&self.name, &self.location, err);
+                        false
+                    })
+                });
+                task.config.retain(|t| {
+                    t.eval_condition(context, hb).unwrap_or_else(|err| {
+                        t.log_error(&self.name, &self.location, err);
+                        false
+                    })
+                });
+                task.remove.retain(|t| {
+                    t.eval_condition(context, hb).unwrap_or_else(|err| {
+                        t.log_error(&self.name, &self.location, err);
+                        false
+                    })
+                });
+                task.update.retain(|t| {
+                    t.eval_condition(context, hb).unwrap_or_else(|err| {
+                        t.log_error(&self.name, &self.location, err);
+                        false
+                    })
+                });
+            }
+        }
         // Filter messages based on display conditions
         retain_components!(self, messages, context, hb);
         // Process generated file conditions
