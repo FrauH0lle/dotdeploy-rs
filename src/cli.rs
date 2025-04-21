@@ -214,12 +214,8 @@ pub(crate) enum Commands {
         file: PathBuf,
     },
 
-    /// Complete uninstall of dotdeploy configuration
-    Nuke {
-        /// Skip safety confirmations
-        #[clap(long)]
-        really: bool,
-    },
+    /// Complete uninstall of dotdeploy
+    Uninstall,
 
     /// Generate shell completions
     Completions {

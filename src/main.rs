@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use toml::Value;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod cli;
 mod cmds;
@@ -317,6 +317,9 @@ async fn run(
     // Get CLI parameters
     let cli = cli::get_cli();
 
+    // If we are performing an uninstallation.
+    let mut is_uninstall = false;
+
     let cmd_result = match cli.command {
         cli::Commands::Deploy { modules, host } => {
             let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
@@ -324,6 +327,9 @@ async fn run(
             if modules.is_empty() {
                 return Ok((false, false));
             }
+
+            let config = Arc::clone(&config);
+
             cmds::sync::sync(
                 modules,
                 config,
@@ -338,7 +344,6 @@ async fn run(
                 Arc::clone(&pm),
             )
             .await
-                
         }
         cli::Commands::Remove { modules, host } => {
             let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
@@ -346,6 +351,9 @@ async fn run(
             if modules.is_empty() {
                 return Ok((false, false));
             }
+
+            let config = Arc::clone(&config);
+
             cmds::remove::remove(
                 modules,
                 config,
@@ -357,6 +365,8 @@ async fn run(
             .await
         }
         cli::Commands::Update { modules } => {
+            let config = Arc::clone(&config);
+
             cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
         }
         cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
@@ -372,6 +382,9 @@ async fn run(
             if modules.is_empty() {
                 return Ok((false, false));
             }
+
+            let config = Arc::clone(&config);
+
             cmds::sync::sync(
                 modules,
                 config,
@@ -384,7 +397,29 @@ async fn run(
             .await
         }
         cli::Commands::Validate { diff: _, fix: _ } => todo!(),
-        cli::Commands::Nuke { really: _ } => todo!(),
+        cli::Commands::Uninstall => {
+            let modules = store
+                .get_all_modules()
+                .await?
+                .into_iter()
+                .map(|m| m.name)
+                .collect();
+
+            // Switch on uninstall flag
+            is_uninstall = true;
+
+            let config = Arc::clone(&config);
+
+            cmds::remove::remove(
+                modules,
+                config,
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        }
         cli::Commands::Completions { shell, out } => {
             if let Some(out) = out {
                 clap_complete::generate_to(shell, &mut cli::Cli::command(), "dotdeploy", &out)
@@ -409,11 +444,49 @@ async fn run(
     };
 
     // --
-    // * Shutdown
+    // * Pool shutdown
 
     let vacuum = sqlx::query!("VACUUM");
     vacuum.execute(&store.pool).await?;
     store.pool.close().await;
+
+    // --
+    // * Uninstall
+
+    if is_uninstall && cmd_result.is_ok() {
+        // Remove database
+        if config.force
+            || utils::common::ask_boolean(&format!(
+                "{}\n{}",
+                "Remove store database? [y/N]",
+                "(You can skip this prompt with the CLI argument '-f true' or '--force=true')",
+            ))
+        {
+            info!("Removing {}", &store.path.display());
+            tokio::fs::remove_file(&store.path).await?;
+        }
+
+        info!(
+            "You can now safely delete\n{}",
+            format!(
+                " - {}\n - {}\n - {}\n",
+                &config
+                    .config_file
+                    .parent()
+                    .ok_or_else(|| eyre!(
+                        "Failed to get parent of {}",
+                        config.config_file.display()
+                    ))?
+                    .display(),
+                &store
+                    .path
+                    .parent()
+                    .ok_or_else(|| eyre!("Failed to get parent of {}", store.path.display()))?
+                    .display(),
+                &config.logs_dir.display()
+            )
+        )
+    }
 
     let loop_running = pm.loop_running.load(Ordering::Relaxed);
     Ok((cmd_result?, loop_running))
