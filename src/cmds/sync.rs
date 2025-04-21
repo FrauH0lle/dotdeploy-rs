@@ -526,8 +526,7 @@ pub(crate) async fn sync(
         });
     }
 
-    // DEPRECATED 2025-04-19: Can probably be removed
-    let _module_names = errors::join_errors(set.join_all().await)?;
+    errors::join_errors(set.join_all().await)?;
 
     // Add new messages
     if show_messages {
