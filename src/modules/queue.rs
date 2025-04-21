@@ -118,28 +118,31 @@ impl ModulesQueue {
         Ok(())
     }
 
-    // TODO 2025-04-17: Update docstring
     /// Processes all modules to generate deployment phase structures
     ///
-    /// Transforms module configurations into executable deployment phases:
-    /// - Expands file paths and wildcards
-    /// - Organizes files into appropriate phases (setup/config/update/remove)
-    /// - Handles template configuration for files
-    /// - Collects packages, generators, and messages
+    /// Transforms module configurations into executable deployment phases by:
+    /// - Expanding file paths using module context
+    /// - Resolving wildcards in source/target paths
+    /// - Organizing files into setup/config phases based on configuration
+    /// - Collecting packages, generators and messages from modules
+    /// - Handling removal of obsolete deployed files
     ///
     /// # Returns
     /// Tuple containing:
-    /// - Four deployment phases: (setup, config, update, remove)
-    /// - Vector of packages to install
-    /// - Vector of file generators
-    /// - Vector of command messages
+    /// - Setup phase files
+    /// - Config phase files  
+    /// - Deployment tasks container
+    /// - Packages to install
+    /// - File generators to execute
+    /// - Command messages to display
     ///
     /// # Errors
-    /// * Returns error for invalid wildcard usage
-    /// * Returns error for missing template configuration
-    /// * Returns error for invalid phase specification
-    /// * Returns error for concurrent access failures
-    /// * Returns error for Arc unwrapping failures
+    /// - Path expansion failures due to invalid formats
+    /// - Wildcard mismatches between source/target
+    /// - Missing required template configurations
+    /// - Filesystem access errors during cleanup
+    /// - Permission issues when removing old files
+    /// - Module processing failures during async execution
     pub(crate) async fn process(
         &mut self,
         config: Arc<DotdeployConfig>,
@@ -646,25 +649,24 @@ impl ModulesQueue {
         }
     }
 
-    // TODO 2025-04-16: Update docstring
-    /// Processes module tasks and distributes them to appropriate deployment phases
+    /// Processes module tasks and organizes them into deployment phases
     ///
-    /// This function:
-    /// - Expands paths in task commands
-    /// - Creates phase-specific task entries with proper metadata
-    /// - Distributes tasks to setup/deploy/config phases based on configuration
+    /// This function handles:
+    /// - Path expansion in task commands using module context
+    /// - Conversion of module task definitions to phase-ready tasks
+    /// - Collection of tasks into centralized deployment container
     ///
     /// # Arguments
-    /// * `tasks` - Vector of module tasks to process
-    /// * `module` - Module these tasks belong to
-    /// * `setup_phase` - Setup phase container to populate
-    /// * `deploy_phase` - Deploy phase container to populate
-    /// * `config_phase` - Config phase container to populate
+    /// * `tasks` - Module tasks to process
+    /// * `module` - Source module for context and metadata
+    /// * `container` - Central task container for all deployment phases
     ///
     /// # Errors
-    /// * Returns error if path expansion fails
-    /// * Returns error if required fields are missing
-    /// * Returns error if invalid phase is specified
+    /// - Path expansion failures in task commands
+    /// - Missing required task fields (expand_args, sudo)
+    /// - Invalid task phase specifications
+    /// - Lock acquisition failures for shared container
+    /// - Invalid task definitions with missing required fields
     async fn process_tasks(
         tasks: Vec<ModuleTask>,
         module: &mut DotdeployModule,
