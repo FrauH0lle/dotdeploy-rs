@@ -262,16 +262,15 @@ pub(crate) async fn sync(
             .flatten()
             .collect::<Vec<_>>();
 
-        if !config.skip_pkg_install && !installed_pkgs.is_empty() && config.remove_pkg_cmd.is_none()
-        {
+        if !installed_pkgs.is_empty() && config.remove_pkg_cmd.is_none() {
             return Err(eyre!(
-                "Found packages in store which might need to get removed, but `remove_pkg_cmd` is not defined and `skip_pkg_install` is false"
+                "Found packages in store which might need to get removed but `remove_pkg_cmd` is not defined"
             ));
         }
 
-        if !config.skip_pkg_install && !pkgs.is_empty() && config.install_pkg_cmd.is_none() {
+        if !pkgs.is_empty() && config.install_pkg_cmd.is_none() {
             return Err(eyre!(
-                "Found packages to install, but `install_pkg_cmd` is not defined and `skip_pkg_install` is false"
+                "Found packages to install but `install_pkg_cmd` is not defined"
             ));
         }
 
@@ -348,9 +347,7 @@ pub(crate) async fn sync(
 
     // Install packages
     if sync_packages {
-        if config.skip_pkg_install {
-            info!("Skipping package installation as requested");
-        } else if !packages.is_empty() {
+        if !packages.is_empty() {
             info!("Installing packages");
 
             // Verify installed packages and collect obsolete packages for removal

@@ -49,7 +49,6 @@ use std::path::{Path, PathBuf};
 /// ## Package Management
 /// - `install_pkg_cmd`: None
 /// - `remove_pkg_cmd`: None
-/// - `skip_pkg_install`: false - Whether to skip package operations
 ///
 /// # Example Configuration
 /// To override options, your `config.toml` might look like this:
@@ -93,8 +92,6 @@ pub(crate) struct DotdeployConfig {
     pub(crate) install_pkg_cmd: Option<Vec<OsString>>,
     /// Command used to remove packages.
     pub(crate) remove_pkg_cmd: Option<Vec<OsString>>,
-    /// Skip package installation during deployment
-    pub(crate) skip_pkg_install: bool,
     /// Directory of the user store
     pub(crate) user_store_path: PathBuf,
     /// Directory of the log files
@@ -124,7 +121,6 @@ pub(crate) struct DotdeployConfigBuilderIntermediate {
     pub(crate) deploy_sys_files: Option<bool>,
     pub(crate) install_pkg_cmd: Option<Vec<String>>,
     pub(crate) remove_pkg_cmd: Option<Vec<String>>,
-    pub(crate) skip_pkg_install: Option<bool>,
     pub(crate) user_store_path: Option<PathBuf>,
     pub(crate) logs_dir: Option<PathBuf>,
     pub(crate) logs_max: Option<usize>,
@@ -148,7 +144,6 @@ pub(crate) struct DotdeployConfigBuilder {
     pub(crate) deploy_sys_files: Option<bool>,
     pub(crate) install_pkg_cmd: Option<Vec<OsString>>,
     pub(crate) remove_pkg_cmd: Option<Vec<OsString>>,
-    pub(crate) skip_pkg_install: Option<bool>,
     pub(crate) user_store_path: Option<PathBuf>,
     pub(crate) logs_dir: Option<PathBuf>,
     pub(crate) logs_max: Option<usize>,
@@ -175,7 +170,6 @@ impl From<DotdeployConfigBuilderIntermediate> for DotdeployConfigBuilder {
             remove_pkg_cmd: intermediate
                 .remove_pkg_cmd
                 .map(|v| v.into_iter().map(OsString::from).collect()),
-            skip_pkg_install: intermediate.skip_pkg_install,
             user_store_path: intermediate.user_store_path,
             logs_dir: intermediate.logs_dir,
             logs_max: intermediate.logs_max,
@@ -274,12 +268,6 @@ impl DotdeployConfigBuilder {
     ) -> &mut Self {
         let new = self;
         new.remove_pkg_cmd = remove_pkg_cmd;
-        new
-    }
-
-    pub(crate) fn with_skip_pkg_install(&mut self, skip_pkg_install: Option<bool>) -> &mut Self {
-        let new = self;
-        new.skip_pkg_install = skip_pkg_install;
         new
     }
 
@@ -448,9 +436,6 @@ impl DotdeployConfigBuilder {
                 Some(ref value) => Some(Clone::clone(value)),
                 None => parsed_data.remove_pkg_cmd,
             },
-            skip_pkg_install: self
-                .skip_pkg_install
-                .unwrap_or(parsed_data.skip_pkg_install.unwrap_or(false)),
             user_store_path,
             logs_dir: match self.logs_dir {
                 Some(ref value) => Clone::clone(value),

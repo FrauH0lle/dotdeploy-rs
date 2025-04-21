@@ -72,10 +72,6 @@ pub(crate) struct Cli {
     #[clap(long, action, env = "DOD_REMOVE_PKG_CMD", num_args = 0.., value_delimiter = ' ')]
     pub(crate) remove_pkg_cmd: Option<Vec<OsString>>,
 
-    /// Skip package installation during deployment
-    #[clap(long, action, global = true, env = "DOD_SKIP_PKG_INSTALL")]
-    pub(crate) skip_pkg_install: Option<bool>,
-
     /// Assume "yes" instead of prompting
     #[clap(short = 'y', long = "noconfirm", global = true, env = "DOD_YES")]
     pub(crate) noconfirm: Option<bool>,

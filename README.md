@@ -103,9 +103,6 @@ install_pkg_cmd = []
 # Example: ["sudo", "dnf", "remove", "-y"]
 remove_pkg_cmd = []
 
-# Skip package installation during deployment
-skip_pkg_install = false
-
 # Logging
 # Maximum number of log files to retain
 logs_max = 15

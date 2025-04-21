@@ -117,7 +117,6 @@ fn init_config() -> Result<config::DotdeployConfig> {
         .with_deploy_sys_files(cli.deploy_sys_files)
         .with_install_pkg_cmd(cli.install_pkg_cmd)
         .with_remove_pkg_cmd(cli.remove_pkg_cmd)
-        .with_skip_pkg_install(cli.skip_pkg_install)
         .with_user_store_path(cli.user_store)
         .with_logs_dir(cli.logs_dir)
         .with_logs_max(cli.logs_max)
@@ -155,10 +154,6 @@ fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) -> Result<()> {
         std::env::set_var(
             "DOD_DEPLOY_SYS_FILES",
             dotdeploy_config.deploy_sys_files.to_string(),
-        );
-        std::env::set_var(
-            "DOD_SKIP_PKG_INSTALL",
-            dotdeploy_config.skip_pkg_install.to_string(),
         );
         std::env::set_var("DOD_USER_STORE", &dotdeploy_config.user_store_path);
     }
