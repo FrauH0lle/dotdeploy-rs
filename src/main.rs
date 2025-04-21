@@ -1,361 +1,447 @@
-use anyhow::{Context, Result};
-
-use lazy_static::lazy_static;
-
-use std::fmt::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::store::Store;
+use clap::CommandFactory;
+use color_eyre::eyre::{WrapErr, eyre};
+use color_eyre::{Result, Section};
+use config::DotdeployConfigBuilder;
+use handlebars::Handlebars;
+use logs::Logger;
+use std::collections::HashMap;
 use std::sync::Arc;
-
-#[macro_use]
-extern crate log;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use toml::Value;
+use tracing::{debug, error};
 
 mod cli;
+mod cmds;
 mod config;
-mod deploy;
+mod errors;
+mod handlebars_helper;
+mod logs;
 mod modules;
-mod packages;
 mod phases;
-mod phases2;
-mod remove;
 mod store;
+#[cfg(test)]
+mod tests;
 mod utils;
 
-use store::Stores;
-
-lazy_static! {
-    /// Global variable, available to all threads, indicating if the system store can be used.
-    pub(crate) static ref DEPLOY_SYSTEM_FILES: AtomicBool = AtomicBool::new(false);
-    /// Global variable, available to all threads, indicating if sudo can be used.
-    pub(crate) static ref USE_SUDO: AtomicBool = AtomicBool::new(false);
-}
-
 fn main() {
-    match run() {
-        Ok(success) if success => std::process::exit(0),
-        Ok(_) => std::process::exit(1),
+    // Initialize color_eyre
+    color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
+
+    let dotdeploy_config = match init_config() {
+        Ok(config) => config,
         Err(e) => {
-            display_error(e);
+            eprintln!("Failed to initialize config. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Initialize logging
+    let logger = match logs::LoggerBuilder::default()
+        .with_verbosity(cli::get_cli().verbosity)
+        .with_log_dir(&dotdeploy_config.logs_dir)
+        .with_max_logs(dotdeploy_config.logs_max)
+        .build()
+    {
+        Ok(logger) => logger,
+        Err(e) => {
+            eprintln!("Failed to setup logging. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+    let _log_guard = match logger.start() {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Failed to initialize logging. Exiting");
+            eprintln!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+
+    debug!("Config initialized:\n{:#?}", &dotdeploy_config);
+
+    let (tx, rx) = mpsc::channel();
+
+    match run(dotdeploy_config, logger, rx) {
+        Ok((success, loop_running)) => {
+            if loop_running {
+                let _ = tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(210));
+            }
+            match success {
+                true => std::process::exit(0),
+                _ => std::process::exit(1),
+            }
+        }
+        Err(e) => {
+            eprintln!("An error occured during deployment. Exiting");
+            eprintln!("{:?}", e);
+            let _ = tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(210));
             std::process::exit(1);
         }
     }
 }
 
-pub(crate) fn display_error(error: anyhow::Error) {
-    let mut chain = error.chain();
-    let mut error_message = format!("{}\nCaused by:\n", chain.next().unwrap());
-
-    for e in chain {
-        writeln!(error_message, "    {}", e).unwrap();
-    }
-    // Remove last \n
-    error_message.pop();
-
-    error!("{}", error_message);
-}
-
-#[tokio::main]
-async fn run() -> Result<bool> {
+/// Initializes and configures Dotdeploy by:
+///
+/// 1. Parsing CLI arguments
+/// 2. Loading configuration from file (if present)
+/// 3. Merging CLI arguments with file configuration
+/// 4. Returning the final configuration
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Configuration file parsing fails
+/// - Required paths or values are missing
+fn init_config() -> Result<config::DotdeployConfig> {
     let cli = cli::get_cli();
 
-    simplelog::TermLogger::init(
-        match cli.verbosity {
-            0 => simplelog::LevelFilter::Info,
-            1 => simplelog::LevelFilter::Debug,
-            2 => simplelog::LevelFilter::Trace,
-            _ => unreachable!(),
-        },
-        simplelog::ConfigBuilder::new()
-            .set_time_level(simplelog::LevelFilter::Debug)
-            .set_location_level(simplelog::LevelFilter::Debug)
-            .set_target_level(simplelog::LevelFilter::Debug)
-            .set_thread_level(simplelog::LevelFilter::Debug)
-            .set_level_padding(simplelog::LevelPadding::Left)
-            .add_filter_allow("dotdeploy".to_string())
-            .build(),
-        simplelog::TerminalMode::Mixed,
-        simplelog::ColorChoice::Auto,
-    )
-    .unwrap();
+    // Initialize config and merge CLI args into config
+    let dotdeploy_config = DotdeployConfigBuilder::default()
+        .with_dry_run(cli.dry_run)
+        .with_force(cli.force)
+        .with_noconfirm(cli.noconfirm)
+        .with_config_file(cli.config_file)
+        .with_dotfiles_root(cli.dotfiles_root)
+        .with_modules_root(cli.modules_root)
+        .with_hosts_root(cli.hosts_root)
+        .with_hostname(cli.hostname)
+        .with_distribution(cli.distribution)
+        .with_use_sudo(cli.use_sudo)
+        .with_sudo_cmd(cli.sudo_cmd)
+        .with_deploy_sys_files(cli.deploy_sys_files)
+        .with_install_pkg_cmd(cli.install_pkg_cmd)
+        .with_remove_pkg_cmd(cli.remove_pkg_cmd)
+        .with_skip_pkg_install(cli.skip_pkg_install)
+        .with_user_store_path(cli.user_store)
+        .with_logs_dir(cli.logs_dir)
+        .with_logs_max(cli.logs_max)
+        .build(cli.verbosity)?;
 
-    // The Dotdeploy config should be on the top level as it contains information like the paths
-    // which are needed often.
-    let mut dotdeploy_config =
-        config::DotdeployConfig::init().context("Failed to initialize Dotdeploy config")?;
-    if cli.skip_pkg_install {
-        dotdeploy_config.skip_pkg_install = cli.skip_pkg_install;
-    }
+    Ok(dotdeploy_config)
+}
 
-    // Set global variables according to config
-    DEPLOY_SYSTEM_FILES.store(dotdeploy_config.deploy_sys_files, Ordering::Relaxed);
-    USE_SUDO.store(dotdeploy_config.use_sudo, Ordering::Relaxed);
+/// Make config available as environment variables.
+///
+/// For nearly all configuration values, a corresponding environment variable will be set.
+fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) -> Result<()> {
+    let (name, version) = dotdeploy_config
+        .distribution
+        .split_once(':')
+        .ok_or_else(|| {
+            eyre!(
+                "Invalid distribution name format: {}",
+                dotdeploy_config.distribution
+            )
+        })?;
 
-    // Make config available as environment variables
     unsafe {
-        std::env::set_var("DOD_ROOT", &dotdeploy_config.config_root);
+        std::env::set_var("DOD_DRY_RUN", dotdeploy_config.dry_run.to_string());
+        std::env::set_var("DOD_FORCE", dotdeploy_config.force.to_string());
+        std::env::set_var("DOD_YES", dotdeploy_config.noconfirm.to_string());
+        std::env::set_var("DOD_DOTFILES_ROOT", &dotdeploy_config.dotfiles_root);
         std::env::set_var("DOD_MODULES_ROOT", &dotdeploy_config.modules_root);
         std::env::set_var("DOD_HOSTS_ROOT", &dotdeploy_config.hosts_root);
         std::env::set_var("DOD_HOSTNAME", &dotdeploy_config.hostname);
-        std::env::set_var("DOD_DISTRO", &dotdeploy_config.distribution);
+        std::env::set_var("DOD_DISTRIBUTION", &dotdeploy_config.distribution);
+        std::env::set_var("DOD_DISTRIBUTION_NAME", name);
+        std::env::set_var("DOD_DISTRIBUTION_VERSION", version);
+        std::env::set_var("DOD_USE_SUDO", dotdeploy_config.use_sudo.to_string());
+        std::env::set_var(
+            "DOD_DEPLOY_SYS_FILES",
+            dotdeploy_config.deploy_sys_files.to_string(),
+        );
+        std::env::set_var(
+            "DOD_SKIP_PKG_INSTALL",
+            dotdeploy_config.skip_pkg_install.to_string(),
+        );
+        std::env::set_var("DOD_USER_STORE", &dotdeploy_config.user_store_path);
     }
 
-    trace!("Config values: {:#?}", &dotdeploy_config);
+    Ok(())
+}
 
-    // Handlebars templating
-    let mut context: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut handlebars: handlebars::Handlebars<'static> = handlebars::Handlebars::new();
-    handlebars.set_strict_mode(true);
-    let handlebars = Arc::new(handlebars);
+/// Make config available as environment variables.
+///
+/// For nearly all configuration values, a corresponding environment variable will be set.
+fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<String, Value>> {
+    let (name, version) = dotdeploy_config
+        .distribution
+        .split_once(':')
+        .ok_or_else(|| {
+            eyre!(
+                "Invalid distribution name format: {}",
+                dotdeploy_config.distribution
+            )
+        })?;
 
+    let mut context: HashMap<String, Value> = HashMap::new();
     context.insert(
-        "DOD_ROOT".to_string(),
-        utils::file_fs::path_to_string(&dotdeploy_config.config_root)?,
+        "DOD_DOTFILES_ROOT".to_string(),
+        Value::String(
+            dotdeploy_config
+                .dotfiles_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.dotfiles_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_MODULES_ROOT".to_string(),
-        utils::file_fs::path_to_string(&dotdeploy_config.modules_root)?,
+        Value::String(
+            dotdeploy_config
+                .modules_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.modules_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_HOSTS_ROOT".to_string(),
-        utils::file_fs::path_to_string(&dotdeploy_config.hosts_root)?,
+        Value::String(
+            dotdeploy_config
+                .hosts_root
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.hosts_root))?
+                .to_string(),
+        ),
     );
     context.insert(
         "DOD_HOSTNAME".to_string(),
-        dotdeploy_config.hostname.to_string(),
+        Value::String(dotdeploy_config.hostname.to_string()),
     );
     context.insert(
-        "DOD_DISTRO".to_string(),
-        dotdeploy_config.distribution.to_string(),
+        "DOD_DISTRIBUTION".to_string(),
+        Value::String(dotdeploy_config.distribution.to_string()),
+    );
+    context.insert(
+        "DOD_DISTRIBUTION_NAME".to_string(),
+        Value::String(name.to_string()),
+    );
+    context.insert(
+        "DOD_DISTRIBUTION_VERSION".to_string(),
+        Value::String(version.to_string()),
+    );
+    context.insert(
+        "DOD_USE_SUDO".to_string(),
+        Value::String(dotdeploy_config.use_sudo.to_string()),
+    );
+    context.insert(
+        "DOD_DEPLOY_SYS_FILES".to_string(),
+        Value::String(dotdeploy_config.deploy_sys_files.to_string()),
+    );
+    context.insert(
+        "DOD_USER_STORE".to_string(),
+        Value::String(
+            dotdeploy_config
+                .user_store_path
+                .to_str()
+                .ok_or_else(|| eyre!("{:?} is not valid UTF-8", dotdeploy_config.user_store_path))?
+                .to_string(),
+        ),
     );
 
-    let mut messages: (
-        std::collections::BTreeMap<String, Vec<String>>,
-        std::collections::BTreeMap<String, Vec<String>>,
-    ) = (
-        std::collections::BTreeMap::new(),
-        std::collections::BTreeMap::new(),
+    Ok(context)
+}
+
+#[tokio::main]
+async fn run(
+    config: config::DotdeployConfig,
+    logger: Logger,
+    rx: mpsc::Receiver<()>,
+) -> Result<(bool, bool)> {
+    // --
+    // * Setup
+
+    // Export environment variables to process
+    export_env_vars(&config)?;
+
+    // Initialize privilege manager
+    let pm = Arc::new(
+        utils::sudo::PrivilegeManagerBuilder::new()
+            .with_use_sudo(config.use_sudo)
+            .with_root_cmd(match config.sudo_cmd.as_str() {
+                "sudo" => utils::sudo::GetRootCmd::use_sudo(),
+                "doas" => utils::sudo::GetRootCmd::use_doas(),
+                _ => {
+                    return Err(eyre!("Unsupported privilege elevation command")
+                        .suggestion("Check the value of 'sudo_cmd' in the dotdeploy config"));
+                }
+            })
+            .with_terminal_lock(logger.terminal_lock)
+            .with_channel_rx(Some(rx))
+            .build()?,
     );
 
-    let mut generators: std::collections::BTreeMap<std::path::PathBuf, crate::modules::generate::Generate> =
-        std::collections::BTreeMap::new();
+    // Initialize store
+    let store = Arc::new(
+        store::sqlite::init_sqlite_store(&config, Arc::clone(&pm))
+            .await
+            .wrap_err("Failed to initialize user store")?,
+    );
+    debug!(store = ?store, "Store initialized");
 
-    // Initialize stores
-    let stores = Arc::new(Stores::init().await.context("Failed to initialize stores")?);
+    // --
+    // * Initialize handlebars templating
 
-    match &cli.command {
-        cli::Commands::Deploy { modules } => match modules {
-            None => {
-                let mut module_queue = modules::queue::ModuleQueue {
-                    modules: std::collections::BTreeSet::new(),
-                    context,
-                };
-                // Try to add host module
-                let host_module = vec![["hosts/", &dotdeploy_config.hostname].join("").to_string()];
-                module_queue.add_modules(&host_module, &dotdeploy_config, true)?;
+    let mut handlebars: Handlebars<'static> = Handlebars::new();
+    handlebars.set_strict_mode(true);
+    handlebars_misc_helpers::register(&mut handlebars);
+    handlebars.register_helper("contains", Box::new(handlebars_helper::contains_helper));
+    handlebars.register_helper(
+        "is_executable",
+        Box::new(handlebars_helper::is_executable_helper),
+    );
+    handlebars.register_helper(
+        "find_executable",
+        Box::new(handlebars_helper::find_executable_helper),
+    );
+    handlebars.register_helper(
+        "command_success",
+        Box::new(handlebars_helper::command_success_helper),
+    );
+    handlebars.register_helper(
+        "command_output",
+        Box::new(handlebars_helper::command_output_helper),
+    );
 
-                trace!("Context values: {:#?}", &module_queue.context);
+    // Set up the context used by handlebars
+    let context = setup_context(&config)?;
 
-                // Add modules to stores
-                for module in module_queue.modules.iter() {
-                    let m = crate::store::modules::StoreModule {
-                        name: module.name.clone(),
-                        location: utils::file_fs::path_to_string(&module.location)?,
-                        user: Some(std::env::var("USER")?),
-                        reason: module.reason.clone(),
-                        depends: module.config.depends.clone().map(|deps| deps.join(", ")),
-                        date: chrono::offset::Local::now(),
-                    };
-                    // User store
-                    stores
-                        .user_store
-                        .add_module(m.clone())
-                        .await
-                        .map_err(|e| e.into_anyhow())?;
-                    // System store
-                    if let Some(ref sys_store) = stores.system_store {
-                        sys_store.add_module(m).await.map_err(|e| e.into_anyhow())?;
-                    }
-                }
+    // Wrap config in an Arc as it will be shared across threads
+    let config = Arc::new(config);
 
-                let phases = phases::assign_module_config(
-                    module_queue.modules,
-                    serde_json::to_value(&module_queue.context)?,
-                    &stores,
-                    &mut messages,
-                    &mut generators,
-                    &handlebars,
-                )
-                .await?;
+    // --
+    // * Execute
 
-                crate::deploy::deploy(
-                    phases,
-                    Arc::clone(&stores),
-                    serde_json::to_value(&module_queue.context)?,
-                    Arc::clone(&handlebars),
-                    &dotdeploy_config,
-                )
-                .await?;
+    // Get CLI parameters
+    let cli = cli::get_cli();
 
-                // Generate files
-                crate::modules::generate::generate_files(
-                    Arc::clone(&stores),
-                    generators,
-                    serde_json::to_value(&module_queue.context)?,
-                    handlebars,
-                )
-                .await?;
+    let cmd_result = match cli.command {
+        cli::Commands::Deploy { modules, host } => {
+            let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
 
-                // Close pools and save their location
-                let user_store_path = stores.user_store.path.clone();
-                let mut sys_store_path = std::path::PathBuf::new();
+            if modules.is_empty() {
+                return Ok((false, false));
+            }
+            cmds::sync::sync(
+                modules,
+                config,
+                vec![
+                    cli::SyncComponent::Files,
+                    cli::SyncComponent::Tasks,
+                    cli::SyncComponent::Packages,
+                ],
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+                
+        }
+        cli::Commands::Remove { modules, host } => {
+            let modules = get_selected_modules(host, modules, &config, Arc::clone(&store)).await?;
 
-                stores.user_store.close().await.map_err(|e| e.into_anyhow())?;
-                if let Some(sys_store) = &stores.system_store {
-                    sys_store_path.push(sys_store.path.clone());
-                    sys_store.close().await.map_err(|e| e.into_anyhow())?;
-                }
+            if modules.is_empty() {
+                return Ok((false, false));
+            }
+            cmds::remove::remove(
+                modules,
+                config,
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        }
+        cli::Commands::Update { modules } => {
+            cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
+        }
+        cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
+        cli::Commands::Sync(sync_args) => {
+            let modules = get_selected_modules(
+                sync_args.host,
+                sync_args.modules,
+                &config,
+                Arc::clone(&store),
+            )
+            .await?;
 
-                // Drop seems to be the way to make sure the connections get closed
-                drop(stores);
-
-                // Wait until SQLite cleans up the WAL and SHM files
-                store::db::close_connection(&user_store_path)?;
-                if !sys_store_path.as_os_str().is_empty() {
-                    store::db::close_connection(&sys_store_path)?;
-                }
-
-                // Display messages
-                for (module, msgs) in messages.0.into_iter() {
-                    info!("Message for {}", module);
-                    for m in msgs.into_iter() {
-                        println!("{}", m)
-                    }
-                }
-
+            if modules.is_empty() {
+                return Ok((false, false));
+            }
+            cmds::sync::sync(
+                modules,
+                config,
+                sync_args.components,
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        }
+        cli::Commands::Validate { diff: _, fix: _ } => todo!(),
+        cli::Commands::Nuke { really: _ } => todo!(),
+        cli::Commands::Completions { shell, out } => {
+            if let Some(out) = out {
+                clap_complete::generate_to(shell, &mut cli::Cli::command(), "dotdeploy", &out)
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to build completions for {} and write them to {}",
+                            shell,
+                            out.display()
+                        )
+                    })?;
+                Ok(true)
+            } else {
+                clap_complete::generate(
+                    shell,
+                    &mut cli::Cli::command(),
+                    "dotdeploy",
+                    &mut std::io::stdout(),
+                );
                 Ok(true)
             }
-            Some(_modules) => {
-                warn!("Not implemented yet");
-                Ok(true)
-            }
-        },
-        cli::Commands::Remove { modules } => match modules {
-            None => {
-                warn!("Not implemented yet");
-                Ok(true)
-            }
-            Some(modules) => {
+        }
+    };
 
-                // let mut modules = vec![["hosts/", &dotdeploy_config.hostname.unwrap()].join("")];
-                let module_configs = std::collections::BTreeSet::new();
-                let mut files: Vec<crate::store::files::StoreFile> = vec![];
-                // Try to add host module
-                // let host_module = ["hosts/", &dotdeploy_config.hostname].join("");
-                let mut module_queue = modules::queue::ModuleQueue {
-                    modules: std::collections::BTreeSet::new(),
-                    context,
-                };
+    // --
+    // * Shutdown
 
-                module_queue.add_modules(modules, &dotdeploy_config, true)?;
+    let vacuum = sqlx::query!("VACUUM");
+    vacuum.execute(&store.pool).await?;
+    store.pool.close().await;
 
-                for module in modules.iter() {
-                    let user_files = stores
-                        .user_store
-                        .get_all_files(&module)
-                        .await
-                        .map_err(|e| e.into_anyhow())
-                        .with_context(|| {
-                            format!(
-                                "Failed to get files for module {:?} from user store",
-                                &module
-                            )
-                        })?;
-                    for f in user_files.into_iter() {
-                        files.push(f);
-                    }
+    let loop_running = pm.loop_running.load(Ordering::Relaxed);
+    Ok((cmd_result?, loop_running))
+}
 
-                    if let Some(sys_store) = &stores.system_store {
-                        let sys_files = sys_store
-                            .get_all_files(&module)
-                            .await
-                            .map_err(|e| e.into_anyhow())
-                            .with_context(|| {
-                                format!(
-                                    "Failed to get files for module {:?} from system store",
-                                    &module
-                                )
-                            })?;
-                        for f in sys_files.into_iter() {
-                            files.push(f);
-                        }
-                    };
-                }
-
-                let phases = phases::assign_module_config(
-                    module_configs,
-                    serde_json::to_value(&module_queue.context)?,
-                    &stores,
-                    &mut messages,
-                    &mut generators,
-                    &handlebars,
-                )
-                .await?;
-
-                crate::remove::remove(phases, Arc::clone(&stores), files, &dotdeploy_config)
-                    .await?;
-
-                // Remove modules from the stores
-                for module in modules.iter() {
-                    stores
-                        .user_store
-                        .remove_module(module)
-                        .await
-                        .map_err(|e| e.into_anyhow())?;
-                    if let Some(sys_store) = &stores.system_store {
-                        sys_store
-                            .remove_module(module)
-                            .await
-                            .map_err(|e| e.into_anyhow())?;
-                    }
-                }
-
-                // Generate files
-                crate::modules::generate::generate_files(
-                    Arc::clone(&stores),
-                    generators,
-                    serde_json::to_value(&module_queue.context)?,
-                    handlebars,
-                )
-                .await?;
-
-                // Close pools and save their location
-                let user_store_path = stores.user_store.path.clone();
-                let mut sys_store_path = std::path::PathBuf::new();
-
-                stores.user_store.close().await.map_err(|e| e.into_anyhow())?;
-                if let Some(sys_store) = &stores.system_store {
-                    sys_store_path.push(sys_store.path.clone());
-                    sys_store.close().await.map_err(|e| e.into_anyhow())?;
-                }
-
-                // Drop seems to be the way to make sure the connections get closed
-                drop(stores);
-
-                // Wait until SQLite cleans up the WAL and SHM files
-                store::db::close_connection(&user_store_path)?;
-                if !sys_store_path.as_os_str().is_empty() {
-                    store::db::close_connection(&sys_store_path)?;
-                }
-
-                // Display messages
-                for (module, msgs) in messages.1.into_iter() {
-                    info!("Message for {}", module);
-                    for m in msgs.into_iter() {
-                        println!("{}", m)
-                    }
-                }
-
-                Ok(true)
-            }
-        },
+async fn get_selected_modules(
+    host: bool,
+    modules: Option<Vec<String>>,
+    config: &config::DotdeployConfig,
+    store: Arc<store::sqlite::SQLiteStore>,
+) -> Result<Vec<String>> {
+    if host {
+        Ok(vec![format!("hosts/{}", config.hostname)])
+    } else if let Some(modules) = modules {
+        Ok(modules)
+    } else {
+        let mut deployed_modules = store.get_all_modules().await?;
+        if !deployed_modules.is_empty() {
+            deployed_modules.retain(|m| m.reason.as_str() == "manual");
+            Ok(deployed_modules.into_iter().map(|m| m.name).collect())
+        } else {
+            error!("No modules specified or found in store");
+            Ok(vec![])
+        }
     }
 }

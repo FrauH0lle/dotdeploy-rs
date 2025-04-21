@@ -1,0 +1,42 @@
+#+title: Conventions
+
+* Testing
+
+- Add a description to the assert statements in the unit tests
+  - Example
+    #+begin_src rust
+    create_user_dir(&test_path).await?;
+    assert!(test_path.exists(), "create user store directory");
+    #+end_src
+- For each function tested, there should be a single ~test_XYZ~ function which
+  contains all the various tested cases.
+
+* Documentation
+
+The basic structure of item documentation should follow:
+#+begin_src rust
+/// Brief sentence explaining what it is
+///
+/// More detaile description (optional).
+///
+/// * `foo` - Text about foo.
+/// * `bar` - Text about bar.
+///
+/// # Errors (optional)
+/// If the function returns a Result, describing the kinds of errors that might occur and what
+/// conditions might cause those errors.
+#+end_src
+- A separate ~Returns~ section or similar is usually not necessary.
+
+Explanatory code comments should be plentiful (every line). It should be assumed
+that the code is not touched for a long time and whoever is working on it needs
+guidance. Thus, the comments should explain what is happening and why.
+
+* General guidelines
+
+- Try to follow the principle: Make it work, make it correct, make it fast.
+- Use builder patterns
+- Functions should usually take references for their arguments unless they
+  really need to own the argument.
+  - For ~Arc<T>~: Either the function owns the ~Arc~ (e.g. gets a clone as
+    input) or it takes a reference to the data in the ~Arc~, e.g. ~&T~

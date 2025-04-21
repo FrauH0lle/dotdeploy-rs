@@ -1,41 +1,49 @@
-//! Module for handling package installations in the dotdeploy configuration.
-//!
-//! This module defines the structure and behavior of package installations that can be performed
-//! during the deployment process. It allows for conditional installation of packages based on
-//! custom conditions.
+use crate::modules::{ConditionEvaluator, ConditionalComponent};
+use std::path::Path;
+use tracing::error;
+use color_eyre::eyre::Result;
+use serde::{Deserialize, Serialize};
 
-use serde::Deserialize;
-
-use crate::modules::conditional::Conditional;
-
-/// Configuration for package installation within a module.
-///
-/// This struct represents a set of packages to be installed as part of the deployment process. It
-/// includes a list of packages and an optional condition for their installation.
-#[derive(Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ModulePackages {
-    /// A list of package names to install.
-    ///
-    /// Each string in this vector represents the name of a package that should be installed when
-    /// the conditions are met.
+    /// List of package names to install when conditions are met
     pub(crate) install: Vec<String>,
 
-    /// An optional conditional expression for package installation.
-    ///
-    /// If provided, this expression is evaluated at runtime. The packages are only installed if the
-    /// condition evaluates to true. If not provided, the packages will always be installed (subject
-    /// to other deployment rules).
-    pub(crate) eval_when: Option<String>,
+    /// Optional conditional expression evaluated at runtime
+    #[serde(rename = "if")]
+    pub(crate) condition: Option<String>,
 }
 
-/// Implementation of the `Conditional` trait for `ModulePackages`.
-///
-/// This implementation allows `ModulePackages` to be used in contexts where conditional evaluation is
-/// required, such as when deciding whether to install packages based on runtime conditions.
-impl Conditional for ModulePackages {
-    fn eval_when(&self) -> &Option<String> {
-        // Return a reference to the `eval_when` field, which contains the conditional expression
-        // (if any) for this package set
-        &self.eval_when
+impl ConditionEvaluator for ModulePackages {
+    fn eval_condition<T>(&self, context: &T, hb: &handlebars::Handlebars<'static>) -> Result<bool>
+    where
+        T: Serialize,
+    {
+        if let Some(ref condition) = self.condition {
+            Self::eval_condition_helper(condition, context, hb)
+        } else {
+            // Just return true if there is no condition
+            Ok(true)
+        }
     }
+}
+
+impl ConditionalComponent for ModulePackages {
+    fn log_error(&self, module: &str, location: &Path, err: impl std::fmt::Display) {
+        error!(
+            module,
+            location = ?location,
+            packages = self.install.join(", "),
+            "Package condition evaluation failed: {}",
+            err
+        );
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct InstallPackage {
+    pub(crate) module_name: String,
+    /// The content of the message to be displayed.
+    pub(crate) package: String,
 }
