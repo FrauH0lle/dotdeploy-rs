@@ -22,25 +22,34 @@ use tokio::task::JoinSet;
 use toml::Value;
 use tracing::{debug, info, warn};
 
-/// Executes the full deployment pipeline for specified modules
+/// Synchronize module components
 ///
-/// Orchestrates the deployment process including:
-/// - Module dependency resolution
-/// - Context collection and template processing
-/// - Phase-based deployment (setup/config/update)
-/// - Package management
-/// - File generation and message handling
+/// Orchestrates the synchronization of modules through these key phases:
+/// 1. Module dependency resolution and context preparation
+/// 2. Phase-based deployment (setup, config)
+/// 3. Package installation/removal
+/// 4. File generation and message handling
+/// 5. Cleanup of obsolete modules and files
+///
+/// The process is influenced by the chosen components.
 ///
 /// # Arguments
-/// * `modules` - Module names to deploy
-/// * `config` - Shared application configuration
-/// * `store` - Database store for deployment tracking
-/// * `context` - Template context variables
-/// * `handlebars` - Template engine registry
-/// * `pm` - Privilege manager for elevated operations
+/// * `modules` - Names of modules to deploy
+/// * `config` - Shared application configuration with deployment settings
+/// * `components` - Which deployment components to synchronize (files, tasks, packages)
+/// * `store` - Database store for tracking deployed artifacts
+/// * `context` - Template variables for handlebars processing  
+/// * `handlebars` - Handlebars template registry instance
+/// * `pm` - Privilege manager handling sudo/root operations
 ///
 /// # Errors
-/// Returns error if any deployment phase fails or invalid configuration is detected
+/// Returns error if:
+/// - Module dependency resolution fails
+/// - File deployment fails (permission issues, invalid paths)
+/// - Package management commands are undefined in config when needed
+/// - Task processing encounters invalid definitions
+/// - Template rendering errors occur
+/// - Store operations fail (database errors)
 pub(crate) async fn sync(
     modules: Vec<String>,
     config: Arc<DotdeployConfig>,
