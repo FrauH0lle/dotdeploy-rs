@@ -410,7 +410,7 @@ impl FileUtils {
                 || common::ask_boolean(&format!(
                     "{}\n{}",
                     format_args!("Directory {} is now empty. Delete [y/N]?", path.display()),
-                    "(You can skip this prompt with the CLI argument '-y true' or '--noconfirm=true')"
+                    "(You can skip this prompt with the CLI argument '-y/--noconfirm true')"
                 ))
             {
                 match fs::remove_dir(path).await {

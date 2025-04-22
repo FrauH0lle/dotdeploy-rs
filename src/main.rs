@@ -459,7 +459,7 @@ async fn run(
             || utils::common::ask_boolean(&format!(
                 "{}\n{}",
                 "Remove store database? [y/N]",
-                "(You can skip this prompt with the CLI argument '-f true' or '--force=true')",
+                "(You can skip this prompt with the CLI argument '-f/--force true')",
             ))
         {
             info!("Removing {}", &store.path.display());

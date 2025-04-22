@@ -165,7 +165,11 @@ pub(crate) async fn sync(
 
         if !(config.force
             || config.noconfirm
-            || crate::utils::common::ask_boolean("Do you want to remove these modules? [y/N]?"))
+            || crate::utils::common::ask_boolean(&format!(
+                "{}\n{}",
+                "Do you want to remove these modules? [y/N]?",
+                "(You can skip this prompt with the CLI argument '-y/--noconfirm true' or '-f/--force true')"
+            )))
         {
             warn!("Keeping obsolete modules as requested by user");
         } else {
@@ -317,7 +321,7 @@ pub(crate) async fn sync(
                 || crate::utils::common::ask_boolean(&format!(
                     "{}\n{}",
                     "Do you want to continue [y/N]?",
-                    "(You can skip this prompt with the CLI argument '-f true' or '--force=true')",
+                    "(You can skip this prompt with the CLI argument '-f/--force true')",
                 )))
             {
                 warn!("Aborted by user");
