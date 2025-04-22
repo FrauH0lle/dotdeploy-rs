@@ -28,7 +28,7 @@ pub(crate) struct Cli {
     #[clap(long, short, action, global = true, env = "DOD_FORCE")]
     pub(crate) force: Option<bool>,
 
-    /// Dotdeploy config folder
+    /// Dotdeploy config file
     #[clap(long, action, env = "DOD_CONFIG_FILE")]
     pub(crate) config_file: Option<PathBuf>,
 
@@ -48,11 +48,11 @@ pub(crate) struct Cli {
     #[clap(long, action, env = "DOD_HOSTNAME")]
     pub(crate) hostname: Option<String>,
 
-    /// Host device's Linux distribution
+    /// Host device's Linux distribution (e.g. ubuntu:24.04)
     #[clap(long, action, env = "DOD_DISTRIBUTION")]
     pub(crate) distribution: Option<String>,
 
-    /// Use sudo to elevate privileges
+    /// Allow privilege elevation
     #[clap(long, action, env = "DOD_USE_SUDO")]
     pub(crate) use_sudo: Option<bool>,
 
