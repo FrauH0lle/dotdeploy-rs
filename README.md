@@ -6,41 +6,123 @@
 
 ## Description
 
-### Commands
+## Usage 
 
-#### deploy
-Handles complete deployment of modules from start to finish. This command:
-- Checks and resolves module dependencies
-- Processes configuration templates
-- Deploys files in three stages (setup, config, update)
-- Manages required software packages
-- Detects file conflicts
-- Stores important messages for later reference
+### `deploy`
 
-#### update
-Keeps deployed modules up-to-date. Use this to:
-- Update specific modules or all modules at once
-- Run maintenance tasks saved during deployment
-- View stored messages about module updates
-- Keep everything synchronized
-- Safely refresh without changing existing configs (won't touch your existing configurations)
+Deploy one or more modules to the system. This includes copying or linking files
+to their destinations, creating backups of already present target files,
+executing defined tasks, installing packages and displaying module info
+messages.
 
-#### remove
-Safely uninstalls modules and cleans up after them. This:
-- Removes modules and their dependencies
-- Deletes managed files while restoring backups
-- Cleans up related software packages
-- Updates remaining files to work without removed modules
-- Prevents accidental removal of manually installed modules
-- Clears old command records
+``` sh
+# Deploys the module corresponding to the hostname, if it exists.
+dotdeploy deploy --host
 
-#### lookup
-Helps track down where deployed files came from. This:
-- Checks both user-specific and system-wide records
-- Shows original source paths for deployed files
-- Handles files with unusual characters in their paths
-- Works even if files weren't deployed through dotdeploy
-- Great for debugging or checking file origins
+# Deploys the specified modules
+dotdeploy deploy module1 module2 [...]
+```
+
+### `sync`
+
+Synchronize one or more modules' components. These can be a combination of
+`files`, `tasks`, `packages` or `all` of the former.
+
+``` sh
+# Synchronizes any combination of files, tasks and/or packages for all 
+# installed modules
+dotdeploy sync [file tasks packages]
+
+# Sync everything for all installed modules
+dotdeploy sync all
+
+# Sync everything for the hostname module
+dotdeploy sync all --host
+
+# Sync only specified modules
+dotdeploy sync [file tasks packages] -- module1 module2 [...]
+```
+
+Note, that 
+* `dotdeploy sync all` is equivalent to `dotdeploy deploy`
+* `dotdeploy sync` only displays module messages when `all` is used
+
+### `remove`
+
+Remove one or more modules from the system. Files will be removed, backups
+restored, tasks defined for the `remove` phase will be executed and info
+messages will be displayed. `remove` will remove module dependencies if they are
+not needed by another module.
+
+``` sh
+# Removes the module corresponding to the hostname, if it was previously 
+# deployed.
+dotdeploy remove --host
+
+# Removes the specified modules
+dotdeploy remove module1 module2 [...]
+```
+
+### `update`
+
+Execute module maintenance tasks like pulling git repositories or downloading
+the latest binary for a program.
+
+``` sh
+# Execute update tasks for all installed modules.
+dotdeploy update
+
+# Execute update tasks only for the specified modules
+dotdeploy deploy module1 module2 [...]
+```
+
+### `lookup`
+
+If a target file has been deployed by dotdeploy, `lookup` will return the source
+file path. Otherwise it will just return the input file path.
+
+``` sh
+# Lookup file
+dotdeploy lookup /myfile.txt
+# => "/home/user/.dotfiles/modules/module1/myfile.txt" 
+
+# You can combine this with your favorite editor command to edit directly the 
+# correct file:
+nano "$(dotdeploy lookup /myfile.txt | tr -d '"')"
+# dotdeploy will return the filename in double quotes which usually need to be 
+# removed.
+```
+
+### `uninstall`
+
+Completely remove dotdeploy from the system and restore the previous state. 
+
+``` sh
+# Remove all modules and cleanup
+dotdeploy uninstall
+
+# Remove all modules and cleanup without asking for confirmation
+dotdeploy uninstall --force true --noconfirm true
+```
+
+### `completions`
+
+Generate shell completions. Supported shells are: 
+* bash
+* zsh
+* fish
+* elvish
+* powershell
+
+``` sh
+# If you use bash-completion
+mkdir ~/.local/share/bash-completion/completions
+dotdeploy completions --shell bash > ~/.local/share/bash-completion/completions/dotdeploy.bash
+
+# Generate completions for bash and zsh and write them into the specified 
+# directory
+dotdeploy completions --shell bash --shell zsh --out ~/my_completions_dir
+```
 
 ## Configuration
 
