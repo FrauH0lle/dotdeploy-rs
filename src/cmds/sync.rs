@@ -103,7 +103,7 @@ pub(crate) async fn sync(
             if reason != old_module.reason {
                 warn!(
                     "{}: module's installation reason changed from {} to {}",
-                    &name, &old_module.location, &location
+                    &name, &old_module.reason, &reason
                 )
             }
         }
