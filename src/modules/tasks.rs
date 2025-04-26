@@ -24,6 +24,7 @@ pub(crate) struct ModuleTask {
 }
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct TaskDefinitionIntermediate {
+    description: Option<String>,
     shell: Option<String>,
     exec: Option<String>,
     args: Option<Vec<String>>,
@@ -41,6 +42,7 @@ struct TaskDefinitionIntermediate {
 #[serde(deny_unknown_fields)]
 #[serde(from = "TaskDefinitionIntermediate")]
 pub(crate) struct TaskDefinition {
+    pub(crate) description: Option<String>,
     pub(crate) shell: Option<OsString>,
     pub(crate) exec: Option<OsString>,
     pub(crate) args: Option<Vec<OsString>>,
@@ -61,6 +63,7 @@ fn default_expand_args() -> Option<bool> {
 impl From<TaskDefinitionIntermediate> for TaskDefinition {
     fn from(intermediate: TaskDefinitionIntermediate) -> Self {
         Self {
+            description: intermediate.description,
             shell: intermediate.shell.map(OsString::from),
             exec: intermediate.exec.map(OsString::from),
             args: intermediate

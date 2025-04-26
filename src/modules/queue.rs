@@ -690,6 +690,7 @@ impl ModulesQueue {
                 let mut ret = Vec::with_capacity(task.len());
                 for t in task.into_iter() {
                     ret.push(PhaseTaskDefinition {
+                        description: t.description,
                         shell: t.shell,
                         exec: t
                             .exec

@@ -24,6 +24,7 @@ pub(crate) struct PhaseTask {
 
 #[derive(Debug, Default, Deserialize, Serialize, Hash)]
 pub(crate) struct PhaseTaskDefinition {
+    pub(crate) description: Option<String>,
     pub(crate) shell: Option<OsString>,
     pub(crate) exec: Option<OsString>,
     pub(crate) args: Option<Vec<OsString>>,
@@ -56,7 +57,24 @@ impl PhaseTask {
 
         for task in tasks.iter().filter(|t| t.hook == hook) {
             if let Some(description) = &self.description {
-                info!("{}", description);
+                if let Some(sub_description) = &task.description {
+                    info!("{}: {}", description, sub_description);
+                } else {
+                    info!(
+                        "{}: Running {}",
+                        description,
+                        match phase {
+                            DeployPhase::Setup => "setup task",
+                            DeployPhase::Config => "config task",
+                            DeployPhase::Update => "update task",
+                            DeployPhase::Remove => "remove task",
+                        }
+                    );
+                }
+            } else {
+                if let Some(sub_description) = &task.description {
+                    info!("{}", sub_description);
+                }
             }
 
             task.exec(&self.module_name, pm, config).await?
