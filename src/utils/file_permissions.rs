@@ -111,8 +111,8 @@ pub(crate) fn user_to_uid<S: AsRef<str>>(u: S) -> Result<u32> {
 /// # Ok(())
 /// # }
 /// ```
-pub(crate) fn group_to_gid<S: AsRef<str>>(u: S) -> Result<u32> {
-    Ok(nix::unistd::Group::from_name(u.as_ref())
+pub(crate) fn group_to_gid<S: AsRef<str>>(g: S) -> Result<u32> {
+    Ok(nix::unistd::Group::from_name(g.as_ref())
         .unwrap()
         .unwrap()
         .gid
