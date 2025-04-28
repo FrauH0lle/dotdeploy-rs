@@ -3,7 +3,7 @@ use crate::cmds::common;
 use crate::config::DotdeployConfig;
 use crate::errors;
 use crate::modules::DeployPhase;
-use crate::modules::queue::ModulesQueueBuilder;
+use crate::modules::queue::{ModulesQueue, ModulesQueueBuilder};
 use crate::phases::DeployPhaseTasks;
 use crate::store::Store;
 use crate::store::sqlite::SQLiteStore;
@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use toml::Value;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub(crate) struct SyncCtx {
     pub(crate) config: Arc<DotdeployConfig>,
@@ -90,7 +90,7 @@ pub(crate) async fn sync(
         .build(&config)?;
 
     // Add queued modules to context
-    let mut module_names = mod_queue.collect_module_names(&mut context);
+    let module_names = mod_queue.collect_module_names(&mut context);
 
     // Make queued modules available as the env var DOD_MODULES="mod1,mod2,mod3"
     unsafe { std::env::set_var("DOD_MODULES", module_names.join(",")) }
@@ -100,32 +100,6 @@ pub(crate) async fn sync(
         .wrap_err("Failed to collect context")?;
     mod_queue.finalize(&mut context, &handlebars)?;
 
-    // Ensure modules are added to the store
-    let mut set = JoinSet::new();
-    for module in mod_queue.modules.iter() {
-        let name = module.name.clone();
-        let location = module.location.to_string_lossy().to_string();
-        let location_u8 = os_str_to_bytes(&module.location);
-        let user = Some(whoami::username());
-        let reason = module.reason.clone();
-        let depends = module.depends_on.clone();
-        let date = chrono::offset::Utc::now();
-        let store = Arc::clone(&store);
-
-        // Get old module data from store
-        if let Some(old_module) = store.get_module(&name).await? {
-            if location_u8 != old_module.location_u8 {
-                warn!(
-                    "{}: module's location changed from {} to {}",
-                    &name, &old_module.location, &location
-                )
-            }
-
-            if reason != old_module.reason {
-                warn!(
-                    "{}: module's installation reason changed from {} to {}",
-                    &name, &old_module.reason, &reason
-                )
     match op {
         // Ensure modules are added to the store
         SyncOp::Deploy => ensure_modules(&mod_queue, Arc::clone(&store)).await?,
@@ -150,84 +124,19 @@ pub(crate) async fn sync(
                 return Ok(false);
             }
         }
-
-        set.spawn(async move {
-            store
-                .add_module(
-                    &StoreModuleBuilder::default()
-                        .with_name(&name)
-                        .with_location(location)
-                        .with_location_u8(location_u8)
-                        .with_user(user)
-                        .with_reason(reason)
-                        .with_depends(depends)
-                        .with_date(date)
-                        .build()?,
-                )
-                .await
-                .wrap_err(format!("Failed to add module '{}' to store", name))
-        });
     }
-    crate::errors::join_errors(set.join_all().await)?;
 
     // Check for automatically installed modules that are no longer required as dependencies by any
     // other modules. These orphaned modules can be safely removed since they were only added to
     // satisfy previous dependencies.
-    let mut obsolete_modules = HashSet::new();
-
-    // Get all modules from store that were automatically added
-    let auto_modules = store
-        .get_all_modules()
-        .await?
-        .into_iter()
-        .filter(|m| m.reason == "automatic" && m.name != "__dotdeploy_generated")
-        .map(|m| m.name)
-        .collect::<HashSet<_>>();
-
-    // Get all current module dependencies
-    let mut all_dependencies = HashSet::new();
-    for module in store.get_all_modules().await? {
-        if let Some(deps) = module.depends {
-            all_dependencies.extend(deps);
-        }
-    }
-
-    // Find automatic modules that aren't dependencies anymore
-    for module in auto_modules {
-        if !all_dependencies.contains(&module) {
-            obsolete_modules.insert(module);
-        }
-    }
-    let obsolete_modules = Vec::from_iter(obsolete_modules.into_iter());
-    if !obsolete_modules.is_empty() {
-        warn!(
-            "The following automatically installed modules are no longer needed as dependencies:{}{}",
-            format!("\n  - {}", obsolete_modules.join("\n  - ")),
-            "\n!! These modules will be removed !! \n"
-        );
-
-        if !(config.force
-            || config.noconfirm
-            || crate::utils::common::ask_boolean(&format!(
-                "{}\n{}",
-                "Do you want to remove these modules? [y/N]?",
-                "(You can skip this prompt with the CLI argument '-y/--noconfirm true' or '-f/--force true')"
-            )))
-        {
-            warn!("Keeping obsolete modules as requested by user");
-        } else {
-            // Remove the obsolete modules
-            crate::cmds::remove::remove(
-                obsolete_modules,
-                Arc::clone(&config),
-                Arc::clone(&store),
-                Clone::clone(&context),
-                Clone::clone(&handlebars),
-                Arc::clone(&pm),
-            )
-            .await?;
-        }
-    }
+    remove_obsolete_modules(
+        Arc::clone(&store),
+        Arc::clone(&config),
+        &context,
+        &handlebars,
+        Arc::clone(&pm),
+    )
+    .await?;
 
     // Process queue into phases
     let (
@@ -240,60 +149,16 @@ pub(crate) async fn sync(
         .process(Arc::clone(&config), Arc::clone(&store), Arc::clone(&pm))
         .await?;
 
+    // Check if tasks changed and remove obsolete ones
     if sync_tasks {
-        // Check if tasks changed and remove obsolete ones
-        let mut set = JoinSet::new();
-        for module in module_names.into_iter() {
-            let store = Arc::clone(&store);
-            set.spawn(async move {
-                let uuids = store.get_task_uuids(&module).await;
-                (module, uuids)
-            });
-        }
-        let (names, stored_uuids): (Vec<_>, Vec<_>) = set.join_all().await.into_iter().unzip();
-        module_names = names;
-        let stored_uuids = errors::join_errors(stored_uuids)?
-            .into_iter()
-            .flatten()
-            .collect::<HashSet<_>>();
-
-        let mut set = JoinSet::new();
-        for task in task_container.tasks.into_iter() {
-            set.spawn(async move {
-                let uuid = task.calculate_uuid().await;
-                (task, uuid)
-            });
-        }
-        let (tasks, uuids): (Vec<_>, Vec<_>) = set.join_all().await.into_iter().unzip();
-        task_container.tasks = tasks;
-        let uuids = errors::join_errors(uuids)?
-            .into_iter()
-            .collect::<HashSet<_>>();
-
-        // Run remove and also remove from store
-        let mut obsolete_tasks = vec![];
-        for uuid in stored_uuids.difference(&uuids) {
-            if let Some(task) = store.get_task(*uuid).await? {
-                obsolete_tasks.push(task);
-                store.remove_task(*uuid).await?;
-            }
-        }
-        if !obsolete_tasks.is_empty() {
-            warn!(
-                "{} tasks are not part of the configuration anymore or their definitons have changed. Removing",
-                obsolete_tasks.len()
-            );
-
-            let mut obsolete_tasks = DeployPhaseTasks {
-                tasks: obsolete_tasks,
-            };
-            obsolete_tasks
-                .exec_pre_tasks(&pm, &config, DeployPhase::Remove)
-                .await?;
-            obsolete_tasks
-                .exec_post_tasks(&pm, &config, DeployPhase::Remove)
-                .await?;
-        }
+        task_container = remove_obsolete_tasks(
+            module_names,
+            Arc::clone(&store),
+            task_container,
+            Arc::clone(&config),
+            Arc::clone(&pm),
+        )
+        .await?;
     }
 
     if sync_packages {
@@ -769,4 +634,183 @@ where
         .collect::<Vec<_>>();
 
     Ok(modified_files)
+}
+
+async fn ensure_modules(module_queue: &ModulesQueue, store: Arc<SQLiteStore>) -> Result<()> {
+    let mut set = JoinSet::new();
+    for module in module_queue.modules.iter() {
+        let name = module.name.clone();
+        let location = module.location.to_string_lossy().to_string();
+        let location_u8 = os_str_to_bytes(&module.location);
+        let user = Some(whoami::username());
+        let reason = module.reason.clone();
+        let depends = module.depends_on.clone();
+        let date = chrono::offset::Utc::now();
+        let store = Arc::clone(&store);
+
+        // Get old module data from store
+        if let Some(old_module) = store.get_module(&name).await? {
+            if location_u8 != old_module.location_u8 {
+                warn!(
+                    "{}: module's location changed from {} to {}",
+                    &name, &old_module.location, &location
+                )
+            }
+
+            if reason != old_module.reason {
+                warn!(
+                    "{}: module's installation reason changed from {} to {}",
+                    &name, &old_module.reason, &reason
+                )
+            }
+        }
+
+        set.spawn(async move {
+            store
+                .add_module(
+                    &StoreModuleBuilder::default()
+                        .with_name(&name)
+                        .with_location(location)
+                        .with_location_u8(location_u8)
+                        .with_user(user)
+                        .with_reason(reason)
+                        .with_depends(depends)
+                        .with_date(date)
+                        .build()?,
+                )
+                .await
+                .wrap_err(format!("Failed to add module '{}' to store", name))
+        });
+    }
+    crate::errors::join_errors(set.join_all().await)?;
+    Ok(())
+}
+
+async fn remove_obsolete_modules(
+    store: Arc<SQLiteStore>,
+    config: Arc<DotdeployConfig>,
+    context: &HashMap<String, Value>,
+    handlebars: &Handlebars<'static>,
+    pm: Arc<PrivilegeManager>,
+) -> Result<()> {
+    let mut obsolete_modules = HashSet::new();
+
+    // Get all modules from store that were automatically added
+    let auto_modules = store
+        .get_all_modules()
+        .await?
+        .into_iter()
+        .filter(|m| m.reason == "automatic" && m.name != "__dotdeploy_generated")
+        .map(|m| m.name)
+        .collect::<HashSet<_>>();
+
+    // Get all current module dependencies
+    let mut all_dependencies = HashSet::new();
+    for module in store.get_all_modules().await? {
+        if let Some(deps) = module.depends {
+            all_dependencies.extend(deps);
+        }
+    }
+
+    // Find automatic modules that aren't dependencies anymore
+    for module in auto_modules {
+        if !all_dependencies.contains(&module) {
+            obsolete_modules.insert(module);
+        }
+    }
+    let obsolete_modules = Vec::from_iter(obsolete_modules.into_iter());
+    if !obsolete_modules.is_empty() {
+        warn!(
+            "The following automatically installed modules are no longer needed as dependencies:{}{}",
+            format!("\n  - {}", obsolete_modules.join("\n  - ")),
+            "\n!! These modules will be removed !! \n"
+        );
+
+        if !(config.force
+            || config.noconfirm
+            || crate::utils::common::ask_boolean(&format!(
+                "{}\n{}",
+                "Do you want to remove these modules? [y/N]?",
+                "(You can skip this prompt with the CLI argument '-y/--noconfirm true' or '-f/--force true')"
+            )))
+        {
+            warn!("Keeping obsolete modules as requested by user");
+        } else {
+            // Remove the obsolete modules
+            crate::cmds::remove::remove(
+                obsolete_modules,
+                Arc::clone(&config),
+                Arc::clone(&store),
+                Clone::clone(&context),
+                Clone::clone(&handlebars),
+                Arc::clone(&pm),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_obsolete_tasks(
+    modules: Vec<String>,
+    store: Arc<SQLiteStore>,
+    mut task_container: DeployPhaseTasks,
+    config: Arc<DotdeployConfig>,
+    pm: Arc<PrivilegeManager>,
+) -> Result<DeployPhaseTasks> {
+    let mut set = JoinSet::new();
+    for module in modules.into_iter() {
+        let store = Arc::clone(&store);
+        set.spawn(async move {
+            let uuids = store.get_task_uuids(&module).await;
+            uuids
+        });
+    }
+    let stored_uuids = set.join_all().await;
+
+    let stored_uuids = errors::join_errors(stored_uuids)?
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+
+    let mut set = JoinSet::new();
+    for task in task_container.tasks.into_iter() {
+        set.spawn(async move {
+            let uuid = task.calculate_uuid().await;
+            (task, uuid)
+        });
+    }
+    let (tasks, uuids): (Vec<_>, Vec<_>) = set.join_all().await.into_iter().unzip();
+    task_container.tasks = tasks;
+    let uuids = errors::join_errors(uuids)?
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+    // Run remove and also remove from store
+    let mut obsolete_tasks = vec![];
+    for uuid in stored_uuids.difference(&uuids) {
+        if let Some(task) = store.get_task(*uuid).await? {
+            obsolete_tasks.push(task);
+            store.remove_task(*uuid).await?;
+        }
+    }
+    if !obsolete_tasks.is_empty() {
+        warn!(
+            "{} tasks are not part of the configuration anymore or their definitons have changed. Removing",
+            obsolete_tasks.len()
+        );
+
+        let mut obsolete_tasks = DeployPhaseTasks {
+            tasks: obsolete_tasks,
+        };
+        obsolete_tasks
+            .exec_pre_tasks(&pm, &config, DeployPhase::Remove)
+            .await?;
+        obsolete_tasks
+            .exec_post_tasks(&pm, &config, DeployPhase::Remove)
+            .await?;
+
+        info!("Finished removal of obsolete tasks")
+    }
+    Ok(task_container)
 }
