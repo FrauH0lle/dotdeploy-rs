@@ -6,6 +6,8 @@ use crate::store::sqlite_files::StoreFile;
 use crate::store::sqlite_modules::StoreModule;
 use crate::utils::FileUtils;
 use crate::utils::common::{bytes_to_os_str, os_str_to_bytes};
+use crate::utils::file_metadata::FileMetadata;
+use crate::utils::file_permissions;
 use crate::utils::sudo::PrivilegeManager;
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
@@ -17,8 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tokio::fs;
 use toml::Value;
-use tracing::debug;
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +44,15 @@ pub(crate) struct Generate {
     /// An optional conditional expression for file generation.
     #[serde(rename = "if")]
     pub(crate) condition: Option<String>,
+    /// The user that should own the deployed file.
+    /// If not specified, the current user's ownership is maintained.
+    pub(crate) owner: Option<String>,
+    /// The group that should own the deployed file.
+    /// If not specified, the current group ownership is maintained.
+    pub(crate) group: Option<String>,
+    /// File permissions to set on the deployed file, in octal format (e.g., "0644").
+    /// If not specified, default permissions are used.
+    pub(crate) permissions: Option<String>,
 }
 
 impl ConditionEvaluator for Generate {
@@ -85,9 +95,6 @@ static FILE_COMMENTS: LazyLock<HashMap<&'static OsStr, &'static str>> = LazyLock
         (OsStr::new("lua"), "--"),
     ])
 });
-
-// const FILE_COMMENTS: HashMap<OsString, String> =
-//     HashMap::from([(OsString::from_str("rs"), "//".to_string())]);
 
 impl Generate {
     pub(crate) async fn generate_file(
@@ -204,7 +211,31 @@ impl Generate {
 
             file_utils.ensure_dir_exists(&parent).await?;
             fs::write(&self.target, file_content).await?;
-
+            file_utils
+                .set_file_metadata(
+                    &self.target,
+                    FileMetadata {
+                        uid: self
+                            .owner
+                            .as_ref()
+                            .map(file_permissions::user_to_uid)
+                            .transpose()?,
+                        gid: self
+                            .group
+                            .as_ref()
+                            .map(file_permissions::group_to_gid)
+                            .transpose()?,
+                        permissions: self
+                            .permissions
+                            .as_ref()
+                            .map(file_permissions::perms_str_to_int)
+                            .transpose()?,
+                        is_symlink: false,
+                        symlink_source: None,
+                        checksum: None,
+                    },
+                )
+                .await?;
             // Add a special module entry for generated content
             store
                 .add_module(&StoreModule {
