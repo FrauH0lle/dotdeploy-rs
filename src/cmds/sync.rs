@@ -796,8 +796,18 @@ async fn remove_obsolete_tasks(
     }
     if !obsolete_tasks.is_empty() {
         warn!(
-            "{} tasks are not part of the configuration anymore or their definitons have changed. Removing",
-            obsolete_tasks.len()
+            "{} {} not part of the configuration anymore or {} changed. Removing",
+            obsolete_tasks.len(),
+            if obsolete_tasks.len() > 1 {
+                "tasks are"
+            } else {
+                "task is"
+            },
+            if obsolete_tasks.len() > 1 {
+                "their definitons have"
+            } else {
+                "its definiton has"
+            }
         );
 
         let mut obsolete_tasks = DeployPhaseTasks {
