@@ -170,21 +170,36 @@ impl FileUtils {
                 })?,
             }
         }
+
         // Set file ownership if specified
-        if let (Some(uid), Some(gid)) = (metadata.uid, metadata.gid) {
-            match std::os::unix::fs::lchown(&path, Some(uid), Some(gid)) {
+        if metadata.uid.is_some() || metadata.gid.is_some() {
+            match std::os::unix::fs::lchown(&path, metadata.uid, metadata.gid) {
                 Ok(()) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // Determine what we need to change
+                    let mut cmd = OsString::new();
+                    let mut args = OsString::new();
+                    match (metadata.uid, metadata.gid) {
+                        (Some(uid), Some(gid)) => {
+                            // Both are Some
+                            cmd.push("chown");
+                            args.push(&format!("{}:{}", uid, gid));
+                        }
+                        (Some(uid), None) => {
+                            // Only uid is Some
+                            cmd.push("chown");
+                            args.push(&format!("{}", uid));
+                        }
+                        (None, Some(gid)) => {
+                            // Only gid is Some
+                            cmd.push("chgrp");
+                            args.push(&format!("{}", gid));
+                        }
+                        _ => unreachable!(),
+                    }
                     // Use sudo to set ownership if permission is denied
                     self.privilege_manager
-                        .sudo_exec(
-                            OsString::from("chown"),
-                            [
-                                OsString::from(format!("{}:{}", uid, gid)),
-                                path.as_ref().into(),
-                            ],
-                            None,
-                        )
+                        .sudo_exec(cmd, [args, path.as_ref().into()], None)
                         .await?
                 }
                 Err(e) => Err(e).wrap_err_with(|| {
