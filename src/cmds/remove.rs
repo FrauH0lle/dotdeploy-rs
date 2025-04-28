@@ -265,9 +265,7 @@ pub(crate) async fn remove(
             .wrap_err("Failed to collect context")?;
         mod_queue.finalize(&mut context, &handlebars)?;
 
-        let (_, _, _, _, file_generators, _) = mod_queue
-            .process(Arc::clone(&config), Arc::clone(&store), Arc::clone(&pm))
-            .await?;
+        let file_generators = mod_queue.get_file_generators().await?;
 
         debug!("Generating files");
 

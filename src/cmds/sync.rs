@@ -193,7 +193,6 @@ pub(crate) async fn sync(
         mut config_phase_files,
         mut task_container,
         mut packages,
-        file_generators,
         module_messages,
     ) = mod_queue
         .process(Arc::clone(&config), Arc::clone(&store), Arc::clone(&pm))
@@ -503,7 +502,40 @@ pub(crate) async fn sync(
 
     // Generate files
     debug!("Generating files");
+
+    // REVIEW 2025-04-28: This should be done in a better way.
+    let hb = Arc::try_unwrap(hb).map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?;
+    let mut context =
+        Arc::try_unwrap(context).map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?;
+
+    let mut file_gen_queue = ModulesQueueBuilder::new()
+        .with_modules(
+            store
+                .get_all_modules()
+                .await?
+                .into_iter()
+                .filter(|m| m.name.as_str() != "__dotdeploy_generated")
+                .map(|m| m.name)
+                .collect::<Vec<_>>(),
+        )
+        .build(&config)?;
+
+    let module_names = file_gen_queue.collect_module_names(&mut context);
+
+    // Make queued modules available as the env var DOD_MODULES="mod1,mod2,mod3"
+    unsafe { std::env::set_var("DOD_MODULES", module_names.join(",")) }
+
+    file_gen_queue
+        .collect_context(&mut context)
+        .wrap_err("Failed to collect context")?;
+    file_gen_queue.finalize(&mut context, &hb)?;
+
+    let file_generators = file_gen_queue.get_file_generators().await?;
+
     let mut set = JoinSet::new();
+    // REVIEW 2025-04-28: This should be done in a better way.
+    let hb = Arc::new(hb);
+    let context = Arc::new(context);
     for file in file_generators {
         set.spawn({
             let store = Arc::clone(&store);

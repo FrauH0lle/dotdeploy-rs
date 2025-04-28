@@ -153,7 +153,6 @@ impl ModulesQueue {
         DeployPhaseFiles,
         DeployPhaseTasks,
         Vec<InstallPackage>,
-        Vec<Generate>,
         Vec<CommandMessage>,
     )> {
         // Initialize file containers for each deployment stage
@@ -171,8 +170,6 @@ impl ModulesQueue {
 
         // Initialize messages container
         let messages = Arc::new(Mutex::new(Vec::new()));
-        // Initialize file generator container
-        let file_generators = Arc::new(Mutex::new(Vec::new()));
         // Initialize packages container
         let packages = Arc::new(Mutex::new(Vec::new()));
 
@@ -189,7 +186,6 @@ impl ModulesQueue {
             let store = Arc::clone(&store);
             let pm = Arc::clone(&pm);
             let messages = Arc::clone(&messages);
-            let file_generators = Arc::clone(&file_generators);
             let packages = Arc::clone(&packages);
 
             set.spawn(async move {
@@ -227,28 +223,6 @@ impl ModulesQueue {
                                 })
                                 .collect(),
                         );
-                }
-
-                if let Some(file_gens) = module.generators.take() {
-                    let mut fgens = Vec::with_capacity(file_gens.len());
-                    for fg in file_gens.into_iter() {
-                        let mut target = fg.target;
-                        target = Self::expand_target_path(&target, &module).await?;
-                        fgens.push(Generate {
-                            target,
-                            source: fg.source,
-                            shebang: fg.shebang,
-                            comment_start: fg.comment_start,
-                            skip_auto_content: fg.skip_auto_content,
-                            prepend: fg.prepend,
-                            append: fg.append,
-                            condition: fg.condition,
-                        })
-                    }
-                    file_generators
-                        .lock()
-                        .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
-                        .append(&mut fgens)
                 }
 
                 if let Some(module_packages) = module.packages.take() {
@@ -292,9 +266,6 @@ impl ModulesQueue {
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
             Arc::try_unwrap(packages)
-                .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
-                .into_inner()?,
-            Arc::try_unwrap(file_generators)
                 .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
                 .into_inner()?,
             Arc::try_unwrap(messages)
@@ -737,6 +708,52 @@ impl ModulesQueue {
             .tasks
             .append(&mut result);
         Ok(())
+    }
+
+    pub(crate) async fn get_file_generators(&mut self) -> Result<Vec<Generate>> {
+        // Initialize file generator container
+        let file_generators = Arc::new(Mutex::new(Vec::new()));
+        let mut set: JoinSet<Result<(), Report>> = JoinSet::new();
+
+        while let Some(mut module) = self.modules.pop() {
+            let file_generators = Arc::clone(&file_generators);
+
+            set.spawn(async move {
+                if let Some(file_gens) = module.generators.take() {
+                    let mut fgens = Vec::with_capacity(file_gens.len());
+                    for fg in file_gens.into_iter() {
+                        let mut target = fg.target;
+                        target = Self::expand_target_path(&target, &module).await?;
+                        fgens.push(Generate {
+                            target,
+                            source: fg.source,
+                            shebang: fg.shebang,
+                            comment_start: fg.comment_start,
+                            skip_auto_content: fg.skip_auto_content,
+                            prepend: fg.prepend,
+                            append: fg.append,
+                            condition: fg.condition,
+                            owner: fg.owner,
+                            group: fg.group,
+                            permissions: fg.permissions,
+                        })
+                    }
+                    file_generators
+                        .lock()
+                        .map_err(|e| eyre!("Failed to acquire lock {:?}", e))?
+                        .append(&mut fgens)
+                }
+
+                Ok(())
+            });
+        }
+
+        // Wait for all operations to complete
+        crate::errors::join_errors(set.join_all().await)?;
+
+        Ok(Arc::try_unwrap(file_generators)
+            .map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?
+            .into_inner()?)
     }
 }
 
