@@ -22,6 +22,20 @@ use tokio::task::JoinSet;
 use toml::Value;
 use tracing::{debug, info, warn};
 
+pub(crate) struct SyncCtx {
+    pub(crate) config: Arc<DotdeployConfig>,
+    pub(crate) components: Vec<SyncComponent>,
+    pub(crate) store: Arc<SQLiteStore>,
+    pub(crate) context: HashMap<String, Value>,
+    pub(crate) handlebars: Handlebars<'static>,
+    pub(crate) pm: Arc<PrivilegeManager>,
+}
+
+pub(crate) enum SyncOp {
+    Deploy,
+    Sync,
+}
+
 /// Synchronize module components
 ///
 /// Orchestrates the synchronization of modules through these key phases:
@@ -52,14 +66,20 @@ use tracing::{debug, info, warn};
 /// - Store operations fail (database errors)
 pub(crate) async fn sync(
     modules: Vec<String>,
-    config: Arc<DotdeployConfig>,
-    components: Vec<SyncComponent>,
-    store: Arc<SQLiteStore>,
-    mut context: HashMap<String, Value>,
-    handlebars: Handlebars<'static>,
-    pm: Arc<PrivilegeManager>,
+    ctx: SyncCtx,
+    op: SyncOp,
     show_msgs: bool,
 ) -> Result<bool> {
+    // Destructure ctx
+    let SyncCtx {
+        config,
+        components,
+        store,
+        mut context,
+        handlebars,
+        pm,
+    } = ctx;
+
     let sync_files = components.iter().any(|c| c.is_files() || c.is_all());
     let sync_tasks = components.iter().any(|c| c.is_tasks() || c.is_all());
     let sync_packages = components.iter().any(|c| c.is_packages() || c.is_all());
@@ -106,6 +126,28 @@ pub(crate) async fn sync(
                     "{}: module's installation reason changed from {} to {}",
                     &name, &old_module.reason, &reason
                 )
+    match op {
+        // Ensure modules are added to the store
+        SyncOp::Deploy => ensure_modules(&mod_queue, Arc::clone(&store)).await?,
+        // Ensure we are only syncing modules which are already deployed
+        SyncOp::Sync => {
+            let dpl_mods = store
+                .get_all_modules()
+                .await?
+                .into_iter()
+                .map(|m| m.name)
+                .collect::<HashSet<_>>();
+            let unknown_modules = module_names
+                .iter()
+                .filter(|&m| !dpl_mods.contains(m))
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>();
+            if !unknown_modules.is_empty() {
+                error!(
+                    "The following modules are not yet deployed:{}",
+                    format!("\n  - {}", unknown_modules.join("\n  - "))
+                );
+                return Ok(false);
             }
         }
 
@@ -599,7 +641,11 @@ pub(crate) async fn sync(
         errors::join_errors(set.join_all().await)?;
     }
 
-    debug!("Deploy command complete");
+    match op {
+        SyncOp::Deploy => debug!("Deploy command complete"),
+        SyncOp::Sync => debug!("Sync command complete"),
+    }
+
     Ok(true)
 }
 

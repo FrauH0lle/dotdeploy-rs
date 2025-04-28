@@ -1,5 +1,6 @@
 use crate::store::Store;
 use clap::CommandFactory;
+use cmds::sync::{SyncCtx, SyncOp};
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
 use config::DotdeployConfigBuilder;
@@ -334,16 +335,19 @@ async fn run(
 
             cmds::sync::sync(
                 modules,
-                config,
-                vec![
-                    cli::SyncComponent::Files,
-                    cli::SyncComponent::Tasks,
-                    cli::SyncComponent::Packages,
-                ],
-                Arc::clone(&store),
-                context,
-                handlebars,
-                Arc::clone(&pm),
+                SyncCtx {
+                    config,
+                    components: vec![
+                        cli::SyncComponent::Files,
+                        cli::SyncComponent::Tasks,
+                        cli::SyncComponent::Packages,
+                    ],
+                    store: Arc::clone(&store),
+                    context,
+                    handlebars,
+                    pm: Arc::clone(&pm),
+                },
+                SyncOp::Deploy,
                 true,
             )
             .await
@@ -394,12 +398,15 @@ async fn run(
 
             cmds::sync::sync(
                 modules,
-                config,
-                sync_args.components,
-                Arc::clone(&store),
-                context,
-                handlebars,
-                Arc::clone(&pm),
+                SyncCtx {
+                    config,
+                    components: sync_args.components,
+                    store: Arc::clone(&store),
+                    context,
+                    handlebars,
+                    pm: Arc::clone(&pm),
+                },
+                SyncOp::Sync,
                 sync_args.show_messages,
             )
             .await
