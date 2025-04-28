@@ -344,6 +344,7 @@ async fn run(
                 context,
                 handlebars,
                 Arc::clone(&pm),
+                true,
             )
             .await
         }
@@ -399,6 +400,7 @@ async fn run(
                 context,
                 handlebars,
                 Arc::clone(&pm),
+                sync_args.show_messages,
             )
             .await
         }

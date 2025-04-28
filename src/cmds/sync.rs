@@ -58,11 +58,12 @@ pub(crate) async fn sync(
     mut context: HashMap<String, Value>,
     handlebars: Handlebars<'static>,
     pm: Arc<PrivilegeManager>,
+    show_msgs: bool,
 ) -> Result<bool> {
     let sync_files = components.iter().any(|c| c.is_files() || c.is_all());
     let sync_tasks = components.iter().any(|c| c.is_tasks() || c.is_all());
     let sync_packages = components.iter().any(|c| c.is_packages() || c.is_all());
-    let show_messages = components.iter().any(|c| c.is_all());
+    let show_messages = show_msgs;
 
     let mut mod_queue = ModulesQueueBuilder::new()
         .with_modules(modules)
@@ -542,17 +543,17 @@ pub(crate) async fn sync(
     errors::join_errors(set.join_all().await)?;
 
     // Add new messages
-    if show_messages {
-        for msg in module_messages.into_iter() {
-            match msg.on_command.as_deref() {
-                Some("deploy") => {
-                    info!("Message for {}:\n{}", msg.module_name, msg.message);
-                    store.cache_message("deploy", msg).await?
-                }
-                Some("update") => store.cache_message("update", msg).await?,
-                Some("remove") => store.cache_message("remove", msg).await?,
-                _ => unreachable!(),
+    for msg in module_messages.into_iter() {
+        match msg.on_command.as_deref() {
+            Some("deploy") => {
+                if show_messages {
+                    info!("Message for {}:\n{}", msg.module_name, msg.message)
+                };
+                store.cache_message("deploy", msg).await?
             }
+            Some("update") => store.cache_message("update", msg).await?,
+            Some("remove") => store.cache_message("remove", msg).await?,
+            _ => unreachable!(),
         }
     }
 

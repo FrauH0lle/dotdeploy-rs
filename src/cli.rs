@@ -161,6 +161,10 @@ pub(crate) struct SyncArgs {
     #[clap(long, conflicts_with = "modules")]
     pub(crate) host: bool,
 
+    /// Show deployment messages
+    #[clap(long)]
+    pub(crate) show_messages: bool,
+
     /// Optional list of module names to sync
     // Require at least one module
     #[clap(value_name = "MODULE", num_args = 1.., last = true)]
