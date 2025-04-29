@@ -22,15 +22,27 @@ use tokio::task::JoinSet;
 use toml::Value;
 use tracing::{debug, error, info, warn};
 
+/// Context container for synchronization operations
 pub(crate) struct SyncCtx {
+    /// Application configuration with deployment settings
     pub(crate) config: Arc<DotdeployConfig>,
+    /// Synchronization components to process (files/tasks/packages)
     pub(crate) components: Vec<SyncComponent>,
+    /// Database store tracking deployed artifacts
     pub(crate) store: Arc<SQLiteStore>,
+    /// Template variables for handlebars processing
     pub(crate) context: HashMap<String, Value>,
+    /// Handlebars template engine instance
     pub(crate) handlebars: Handlebars<'static>,
+    /// Privilege manager handling elevated permissions
     pub(crate) pm: Arc<PrivilegeManager>,
 }
 
+/// Operation mode for synchronization process
+///
+/// Determines whether we're deploying new modules or syncing existing ones:
+/// * `Deploy` - Initial deployment of new modules
+/// * `Sync` - Update existing deployment with configuration changes
 pub(crate) enum SyncOp {
     Deploy,
     Sync,
@@ -239,7 +251,7 @@ pub(crate) async fn sync(
 
     // Wrap handlebars and context in an Arc as they will be shared across threads
     let hb = Arc::new(handlebars);
-    let context = Arc::new(context);
+    let mut context = Arc::new(context);
 
     // Run deployment
     debug!("Running SETUP phase");
@@ -409,12 +421,6 @@ pub(crate) async fn sync(
 
     // Generate files
     debug!("Generating files");
-
-    // REVIEW 2025-04-28: This should be done in a better way.
-    let hb = Arc::try_unwrap(hb).map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?;
-    let mut context =
-        Arc::try_unwrap(context).map_err(|e| eyre!("Failed to unwrap Arc {:?}", e))?;
-
     let mut file_gen_queue = ModulesQueueBuilder::new()
         .with_modules(
             store
@@ -427,22 +433,29 @@ pub(crate) async fn sync(
         )
         .build(&config)?;
 
-    let module_names = file_gen_queue.collect_module_names(&mut context);
+    let module_names = file_gen_queue.collect_module_names(
+        Arc::get_mut(&mut context)
+            .ok_or_eyre("Failed to get exclusive mutable reference to Arc")?,
+    );
 
     // Make queued modules available as the env var DOD_MODULES="mod1,mod2,mod3"
     unsafe { std::env::set_var("DOD_MODULES", module_names.join(",")) }
 
     file_gen_queue
-        .collect_context(&mut context)
+        .collect_context(
+            Arc::get_mut(&mut context)
+                .ok_or_eyre("Failed to get exclusive mutable reference to Arc")?,
+        )
         .wrap_err("Failed to collect context")?;
-    file_gen_queue.finalize(&mut context, &hb)?;
+    file_gen_queue.finalize(
+        Arc::get_mut(&mut context)
+            .ok_or_eyre("Failed to get exclusive mutable reference to Arc")?,
+        &hb,
+    )?;
 
     let file_generators = file_gen_queue.get_file_generators().await?;
 
     let mut set = JoinSet::new();
-    // REVIEW 2025-04-28: This should be done in a better way.
-    let hb = Arc::new(hb);
-    let context = Arc::new(context);
     for file in file_generators {
         set.spawn({
             let store = Arc::clone(&store);
@@ -514,6 +527,15 @@ pub(crate) async fn sync(
     Ok(true)
 }
 
+/// Collects all deployed files from store for given modules
+///
+/// Queries database in parallel to gather all tracked files for specified modules
+///
+/// * `deployed_modules` - Iterator of module names to check
+/// * `store` - Database connection for file queries
+///
+/// # Errors
+/// Returns error if database queries fail or connection pool issues occur
 async fn collect_deployed_files<I>(
     deployed_modules: I,
     store: Arc<SQLiteStore>,
@@ -541,6 +563,20 @@ where
     Ok(deployed_files)
 }
 
+/// Validates integrity of deployed files against store records
+///
+/// Performs following checks in parallel:
+/// 1. Verifies source files still exist for copied files
+/// 2. Removes dynamically generated files (created during deployment)
+/// 3. Compares checksums against stored values for modifications
+///
+/// * `deployed_files` - Iterator of store file records to validate
+/// * `config` - Application configuration for deletion parameters  
+/// * `pm` - Privilege manager for filesystem operations
+/// * `store` - Database connection for checksum verification
+///
+/// # Errors
+/// Returns error if filesystem operations fail or database access issues occur
 async fn validate_deployed_files<I>(
     deployed_files: I,
     config: Arc<DotdeployConfig>,
@@ -636,6 +672,18 @@ where
     Ok(modified_files)
 }
 
+/// Ensures modules are properly registered in the store
+///
+/// Validates and updates module records during deployment:
+/// 1. Checks for existing module records
+/// 2. Warns about location/reason changes
+/// 3. Stores/updates module metadata in database
+///
+/// * `module_queue` - Processed modules from deployment queue  
+/// * `store` - Database connection for module storage
+///
+/// # Errors
+/// Returns error if database operations fail or module data is invalid
 async fn ensure_modules(module_queue: &ModulesQueue, store: Arc<SQLiteStore>) -> Result<()> {
     let mut set = JoinSet::new();
     for module in module_queue.modules.iter() {
@@ -686,6 +734,21 @@ async fn ensure_modules(module_queue: &ModulesQueue, store: Arc<SQLiteStore>) ->
     Ok(())
 }
 
+/// Removes automatically installed modules that are no longer required
+///
+/// Identifies orphaned dependencies through:
+/// 1. Checking module installation reasons
+/// 2. Analyzing dependency graphs
+/// 3. Interactive confirmation before removal
+///
+/// * `store` - Database connection for module queries
+/// * `config` - Application configuration for confirmation settings
+/// * `context` - Template variables for removal process
+/// * `handlebars` - Template engine for module processing
+/// * `pm` - Privilege manager for removal operations
+///
+/// # Errors
+/// Returns error if dependency analysis fails or removal process encounters issues
 async fn remove_obsolete_modules(
     store: Arc<SQLiteStore>,
     config: Arc<DotdeployConfig>,
@@ -751,6 +814,21 @@ async fn remove_obsolete_modules(
     Ok(())
 }
 
+/// Removes tasks that no longer exist in current configuration
+///
+/// Performs task cleanup through:
+/// 1. UUID comparison between store and current tasks
+/// 2. Execution of pre/post removal tasks
+/// 3. Database record cleanup
+///
+/// * `modules` - Currently active modules for task filtering
+/// * `store` - Database connection for task queries
+/// * `task_container` - Current deployment's task collection
+/// * `config` - Application configuration for task execution
+/// * `pm` - Privilege manager for task operations
+///
+/// # Errors
+/// Returns error if task UUID calculation fails or database operations error
 async fn remove_obsolete_tasks(
     modules: Vec<String>,
     store: Arc<SQLiteStore>,
