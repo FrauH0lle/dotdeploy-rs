@@ -246,6 +246,7 @@ pub(crate) async fn remove(
         .get_all_modules()
         .await?
         .into_iter()
+        .filter(|m| m.name.as_str() != "__dotdeploy_generated")
         .map(|m| m.name)
         .collect::<Vec<_>>();
 
@@ -255,10 +256,20 @@ pub(crate) async fn remove(
             .build(&config)?;
 
         // Add queued modules to context
-        let module_names = mod_queue.collect_module_names(&mut context);
+        mod_queue
+            .add_mod_names_to_context(&mut context, Arc::clone(&store))
+            .await?;
 
-        // Make queued modules available as the env var DOD_MODULES="mod1,mod2,mod3"
-        unsafe { std::env::set_var("DOD_MODULES", module_names.join(",")) }
+        // Make modules available as the env var DOD_MODULES="mod1,mod2,mod3"
+        if let Some(Value::Array(mods)) = context.get("DOD_MODULES") {
+            let modules_str = mods
+                .iter()
+                .filter_map(|m| m.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            unsafe { std::env::set_var("DOD_MODULES", &modules_str) }
+            debug!("Set `DOD_MODULES` to {}", &modules_str)
+        }
 
         mod_queue
             .collect_context(&mut context)

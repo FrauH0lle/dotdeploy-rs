@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 use toml::Value;
-use tracing::info;
+use tracing::{trace, info};
 
 /// Represents a queue of modules to be processed for deployment.
 #[derive(Debug)]
@@ -40,25 +40,55 @@ type PhasesFiles<'a> = (
 );
 
 impl ModulesQueue {
+    /// Collects module names from the queue
+    ///
+    /// Returns the module names.
+    pub(crate) fn get_module_names(&self) -> Vec<String> {
+        let mut names = HashSet::new();
+
+        for module in self.modules.iter() {
+            names.insert(module.name.clone());
+        }
+        names.into_iter().collect::<Vec<_>>()
+    }
+
     /// Collects module names into the context for template processing
     ///
     /// Populates the `DOD_MODULES` key in the context with an array of module names. This array can
     /// be used in handlebars templates to reference other modules.
-    /// Returns the module names.
     ///
     /// * `context` - Mutable reference to template context being built
-    pub(crate) fn collect_module_names(&self, context: &mut HashMap<String, Value>) -> Vec<String> {
-        let mut names = vec![];
+    pub(crate) async fn add_mod_names_to_context(
+        &self,
+        context: &mut HashMap<String, Value>,
+        store: Arc<SQLiteStore>,
+    ) -> Result<()> {
+        // For the context we need to include the modules which are already deployed, otherwise this
+        // does not work as expected when deploying or syncing a single module.
+        let mut context_names = store
+            .get_all_modules()
+            .await?
+            .into_iter()
+            .map(|m| m.name)
+            .collect::<HashSet<_>>();
+
         for module in self.modules.iter() {
-            names.push(module.name.clone());
+            context_names.insert(module.name.clone());
         }
 
         context.insert(
             "DOD_MODULES".to_string(),
-            Value::Array(names.iter().map(|n| Value::String(n.to_string())).collect()),
+            Value::Array(
+                context_names
+                    .iter()
+                    .map(|n| Value::String(n.to_string()))
+                    .collect(),
+            ),
         );
 
-        names
+        trace!(?context);
+
+        Ok(())
     }
 
     /// Merges module-specific context variables into the global context
@@ -937,6 +967,8 @@ fn expand_wildcards<P: AsRef<Path>>(source: P, target: P) -> Result<Vec<(PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::sqlite::init_sqlite_store;
+    use crate::tests::pm_setup;
     use tempfile::tempdir;
 
     fn create_test_module(name: &str) -> DotdeployModule {
@@ -948,12 +980,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_collect_module_names() -> Result<()> {
+    #[tokio::test]
+    async fn test_add_mod_names_to_context() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let (_tx, pm) = tests::pm_setup()?;
+        let config = DotdeployConfig {
+            user_store_path: temp_dir.into_path(),
+            ..Default::default()
+        };
+        let store = Arc::new(init_sqlite_store(&config, pm).await?);
+
         // Empty queue
         let queue = ModulesQueue { modules: vec![] };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context);
+        queue
+            .add_mod_names_to_context(&mut context, Arc::clone(&store))
+            .await?;
 
         let names = context
             .get("DOD_MODULES")
@@ -969,7 +1011,9 @@ mod tests {
             modules: vec![module],
         };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context);
+        queue
+            .add_mod_names_to_context(&mut context, Arc::clone(&store))
+            .await?;
 
         let names = context["DOD_MODULES"]
             .as_array()
@@ -990,21 +1034,26 @@ mod tests {
         ];
         let queue = ModulesQueue { modules };
         let mut context = HashMap::new();
-        queue.collect_module_names(&mut context);
+        queue
+            .add_mod_names_to_context(&mut context, Arc::clone(&store))
+            .await?;
 
         let names = context["DOD_MODULES"]
             .as_array()
             .ok_or_eyre("DOD_MODULES value not array")?;
 
         assert_eq!(names.len(), 3, "Should collect all module names");
-        assert_eq!(
-            names
-                .iter()
-                .map(|v| v.as_str().unwrap())
-                .collect::<Vec<_>>(),
-            vec!["module1", "module2", "module3"],
-            "Module names should be in order"
-        );
+        for m in vec!["module1", "module2", "module3"] {
+            assert!(
+                names
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .contains(&m),
+                "{} should be part of the context",
+                m
+            );
+        }
 
         Ok(())
     }
