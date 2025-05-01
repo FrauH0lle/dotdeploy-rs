@@ -489,15 +489,19 @@ pub(crate) fn locate_module(
     module_name: &str,
     dotdeploy_config: &DotdeployConfig,
 ) -> Result<PathBuf> {
-    // Determine the path to the module's configuration file
-    let path = if module_name.starts_with("hosts/") {
+    let module_elements: Vec<&str> = module_name.split('/').collect();
+    // Determine the path to the module's configuration file by checking the first element of
+    // module_elements
+    let path = if module_elements[0] == "hosts" {
         // For host-specific modules, use the hosts_root directory
         dotdeploy_config
             .hosts_root
-            .join(module_name.trim_start_matches("hosts/"))
+            .join(module_elements[1..].join(std::path::MAIN_SEPARATOR_STR))
     } else {
         // For regular modules, use the modules_root directory
-        dotdeploy_config.modules_root.join(module_name)
+        dotdeploy_config
+            .modules_root
+            .join(module_elements.join(std::path::MAIN_SEPARATOR_STR))
     };
 
     Ok(path)
