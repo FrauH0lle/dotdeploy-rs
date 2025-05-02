@@ -127,7 +127,7 @@ pub(crate) async fn remove(
         || crate::utils::common::ask_boolean(&format!(
             "{}\n{}",
             "Do you want to remove these modules? [y/N]?",
-            "(You can skip this prompt with the CLI argument '-f/--force true')"
+            "(You can skip this prompt with the CLI argument '-f/--force')"
         )))
     {
         error!("Aborted");

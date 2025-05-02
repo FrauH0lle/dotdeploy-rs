@@ -1,5 +1,5 @@
 use crate::store::Store;
-use clap::CommandFactory;
+use clap::{ArgMatches, Command};
 use cmds::sync::{SyncCtx, SyncOp};
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
@@ -7,6 +7,8 @@ use config::DotdeployConfigBuilder;
 use handlebars::Handlebars;
 use logs::Logger;
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -30,7 +32,10 @@ fn main() {
     // Initialize color_eyre
     color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
 
-    let dotdeploy_config = match init_config() {
+    let cmd = cli::build_cli();
+    let cli_matches = cmd.get_matches();
+
+    let dotdeploy_config = match init_config(&cli_matches) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Failed to initialize config. Exiting");
@@ -41,7 +46,7 @@ fn main() {
 
     // Initialize logging
     let logger = match logs::LoggerBuilder::default()
-        .with_verbosity(cli::get_cli().verbosity)
+        .with_verbosity(cli_matches.get_count("verbositiy").min(2))
         .with_log_dir(&dotdeploy_config.logs_dir)
         .with_max_logs(dotdeploy_config.logs_max)
         .build()
@@ -66,7 +71,7 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
 
-    match run(dotdeploy_config, logger, rx) {
+    match run(dotdeploy_config, &mut cmd, &cli_matches, logger, rx) {
         Ok((success, loop_running)) => {
             if loop_running {
                 let _ = tx.send(());
@@ -99,29 +104,37 @@ fn main() {
 /// Returns an error if:
 /// - Configuration file parsing fails
 /// - Required paths or values are missing
-fn init_config() -> Result<config::DotdeployConfig> {
-    let cli = cli::get_cli();
-
+fn init_config(cli: &ArgMatches) -> Result<config::DotdeployConfig> {
     // Initialize config and merge CLI args into config
     let dotdeploy_config = DotdeployConfigBuilder::default()
-        .with_dry_run(cli.dry_run)
-        .with_force(cli.force)
-        .with_noconfirm(cli.noconfirm)
-        .with_config_file(cli.config_file)
-        .with_dotfiles_root(cli.dotfiles_root)
-        .with_modules_root(cli.modules_root)
-        .with_hosts_root(cli.hosts_root)
-        .with_hostname(cli.hostname)
-        .with_distribution(cli.distribution)
-        .with_use_sudo(cli.use_sudo)
-        .with_sudo_cmd(cli.sudo_cmd)
-        .with_deploy_sys_files(cli.deploy_sys_files)
-        .with_install_pkg_cmd(cli.install_pkg_cmd)
-        .with_remove_pkg_cmd(cli.remove_pkg_cmd)
-        .with_user_store_path(cli.user_store)
-        .with_logs_dir(cli.logs_dir)
-        .with_logs_max(cli.logs_max)
-        .build(cli.verbosity)?;
+        .with_dry_run(Some(false))
+        .with_force(cli::flag_is_enabled(cli, "force", "no_force"))
+        .with_noconfirm(cli::flag_is_enabled(cli, "no_ask", "ask"))
+        .with_config_file(cli.get_one::<PathBuf>("config_file").cloned())
+        .with_dotfiles_root(cli.get_one::<PathBuf>("dotfiles_root").cloned())
+        .with_modules_root(cli.get_one::<PathBuf>("modules_root").cloned())
+        .with_hosts_root(cli.get_one::<PathBuf>("hosts_root").cloned())
+        .with_hostname(cli.get_one::<String>("hostname").cloned())
+        .with_distribution(cli.get_one::<String>("distribution").cloned())
+        .with_use_sudo(cli::flag_is_enabled(cli, "use_sudo", "no_use_sudo"))
+        .with_sudo_cmd(cli.get_one::<String>("sudo_cmd").cloned())
+        .with_deploy_sys_files(cli::flag_is_enabled(
+            cli,
+            "deploy_sys_files",
+            "no_deploy_sys_files",
+        ))
+        .with_install_pkg_cmd(
+            cli.get_many::<OsString>("install_pkg_cmd")
+                .map(|v| v.cloned().collect()),
+        )
+        .with_remove_pkg_cmd(
+            cli.get_many::<OsString>("remove_pkg_cmd")
+                .map(|v| v.cloned().collect()),
+        )
+        .with_user_store_path(cli.get_one::<PathBuf>("user_store").cloned())
+        .with_logs_dir(cli.get_one::<PathBuf>("logs_dir").cloned())
+        .with_logs_max(cli.get_one::<usize>("logs_max").copied())
+        .build(cli.get_count("verbosity").min(2))?;
 
     Ok(dotdeploy_config)
 }
@@ -248,6 +261,8 @@ fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<S
 #[tokio::main]
 async fn run(
     config: config::DotdeployConfig,
+    cmd: &mut Command,
+    cli: &ArgMatches,
     logger: Logger,
     rx: mpsc::Receiver<()>,
 ) -> Result<(bool, bool)> {
@@ -315,13 +330,10 @@ async fn run(
     // --
     // * Execute
 
-    // Get CLI parameters
-    let cli = cli::get_cli();
-
     // If we are performing an uninstallation.
     let mut is_uninstall = false;
 
-    let cmd_result = match cli.command {
+    let cmd_result = match cli::Commands::parse_command(cli) {
         cli::Commands::Deploy { modules, host } => {
             let modules =
                 get_selected_modules(host, false, modules, &config, Arc::clone(&store)).await?;
@@ -379,15 +391,14 @@ async fn run(
             cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
         }
         cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
-        cli::Commands::Sync(sync_args) => {
-            let modules = get_selected_modules(
-                sync_args.host,
-                true,
-                sync_args.modules,
-                &config,
-                Arc::clone(&store),
-            )
-            .await?;
+        cli::Commands::Sync {
+            components,
+            host,
+            show_messages,
+            modules,
+        } => {
+            let modules =
+                get_selected_modules(host, true, modules, &config, Arc::clone(&store)).await?;
 
             if modules.is_empty() {
                 error!("No modules specified or found in store");
@@ -400,18 +411,18 @@ async fn run(
                 modules,
                 SyncCtx {
                     config,
-                    components: sync_args.components,
+                    components,
                     store: Arc::clone(&store),
                     context,
                     handlebars,
                     pm: Arc::clone(&pm),
                 },
                 SyncOp::Sync,
-                sync_args.show_messages,
+                show_messages,
             )
             .await
         }
-        cli::Commands::Validate { diff: _, fix: _ } => todo!(),
+        cli::Commands::Validate => todo!(),
         cli::Commands::Uninstall => {
             let modules = store
                 .get_all_modules()
@@ -437,7 +448,7 @@ async fn run(
         }
         cli::Commands::Completions { shell, out } => {
             if let Some(out) = out {
-                clap_complete::generate_to(shell, &mut cli::Cli::command(), "dotdeploy", &out)
+                clap_complete::generate_to(shell, cmd, cmd.get_name().to_string(), &out)
                     .wrap_err_with(|| {
                         format!(
                             "Failed to build completions for {} and write them to {}",
@@ -449,8 +460,8 @@ async fn run(
             } else {
                 clap_complete::generate(
                     shell,
-                    &mut cli::Cli::command(),
-                    "dotdeploy",
+                    cmd,
+                    cmd.get_name().to_string(),
                     &mut std::io::stdout(),
                 );
                 Ok(true)
@@ -474,7 +485,7 @@ async fn run(
             || utils::common::ask_boolean(&format!(
                 "{}\n{}",
                 "Remove store database? [y/N]",
-                "(You can skip this prompt with the CLI argument '-f/--force true')",
+                "(You can skip this prompt with the CLI argument '-f/--force')",
             ))
         {
             info!("Removing {}", &store.path.display());

@@ -102,7 +102,7 @@ Completely remove dotdeploy from the system and restore the previous state.
 dotdeploy uninstall
 
 # Remove all modules and cleanup without asking for confirmation
-dotdeploy uninstall --force true --noconfirm true
+dotdeploy uninstall --force --no-ask
 ```
 
 ### `completions`
