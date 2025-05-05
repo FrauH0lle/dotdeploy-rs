@@ -1,5 +1,5 @@
 use crate::store::Store;
-use clap::{ArgMatches, Command};
+use clap::ArgMatches;
 use cmds::sync::{SyncCtx, SyncOp};
 use color_eyre::eyre::{WrapErr, eyre};
 use color_eyre::{Result, Section};
@@ -32,8 +32,7 @@ fn main() {
     // Initialize color_eyre
     color_eyre::install().unwrap_or_else(|e| panic!("Failed to initialize color_eyre: {:?}", e));
 
-    let cmd = cli::build_cli();
-    let cli_matches = cmd.get_matches();
+    let cli_matches = cli::build_cli().get_matches();
 
     let dotdeploy_config = match init_config(&cli_matches) {
         Ok(config) => config,
@@ -71,7 +70,7 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
 
-    match run(dotdeploy_config, &mut cmd, &cli_matches, logger, rx) {
+    match run(dotdeploy_config, logger, rx) {
         Ok((success, loop_running)) => {
             if loop_running {
                 let _ = tx.send(());
@@ -261,13 +260,15 @@ fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<S
 #[tokio::main]
 async fn run(
     config: config::DotdeployConfig,
-    cmd: &mut Command,
-    cli: &ArgMatches,
     logger: Logger,
     rx: mpsc::Receiver<()>,
 ) -> Result<(bool, bool)> {
     // --
     // * Setup
+
+    // Get CLI
+    let mut cmd = cli::build_cli();
+    let arg_matches = cli::build_cli().get_matches();
 
     // Export environment variables to process
     export_env_vars(&config)?;
@@ -333,7 +334,7 @@ async fn run(
     // If we are performing an uninstallation.
     let mut is_uninstall = false;
 
-    let cmd_result = match cli::Commands::parse_command(cli) {
+    let cmd_result = match cli::Commands::parse_command(&arg_matches) {
         cli::Commands::Deploy { modules, host } => {
             let modules =
                 get_selected_modules(host, false, modules, &config, Arc::clone(&store)).await?;
@@ -448,22 +449,18 @@ async fn run(
         }
         cli::Commands::Completions { shell, out } => {
             if let Some(out) = out {
-                clap_complete::generate_to(shell, cmd, cmd.get_name().to_string(), &out)
-                    .wrap_err_with(|| {
-                        format!(
-                            "Failed to build completions for {} and write them to {}",
-                            shell,
-                            out.display()
-                        )
-                    })?;
+                let name = cmd.get_name().to_string();
+                clap_complete::generate_to(shell, &mut cmd, name, &out).wrap_err_with(|| {
+                    format!(
+                        "Failed to build completions for {} and write them to {}",
+                        shell,
+                        out.display()
+                    )
+                })?;
                 Ok(true)
             } else {
-                clap_complete::generate(
-                    shell,
-                    cmd,
-                    cmd.get_name().to_string(),
-                    &mut std::io::stdout(),
-                );
+                let name = cmd.get_name().to_string();
+                clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
                 Ok(true)
             }
         }
