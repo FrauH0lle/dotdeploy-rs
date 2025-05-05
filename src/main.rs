@@ -45,7 +45,7 @@ fn main() {
 
     // Initialize logging
     let logger = match logs::LoggerBuilder::default()
-        .with_verbosity(cli_matches.get_count("verbositiy").min(2))
+        .with_verbosity(cli_matches.get_count("verbosity").min(2))
         .with_log_dir(&dotdeploy_config.logs_dir)
         .with_max_logs(dotdeploy_config.logs_max)
         .build()
@@ -362,6 +362,7 @@ async fn run(
                 },
                 SyncOp::Deploy,
                 true,
+                true,
             )
             .await
         }
@@ -397,6 +398,7 @@ async fn run(
             host,
             show_messages,
             modules,
+            skip_task_removal,
         } => {
             let modules =
                 get_selected_modules(host, true, modules, &config, Arc::clone(&store)).await?;
@@ -420,6 +422,7 @@ async fn run(
                 },
                 SyncOp::Sync,
                 show_messages,
+                skip_task_removal,
             )
             .await
         }

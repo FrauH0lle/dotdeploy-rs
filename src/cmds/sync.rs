@@ -81,6 +81,7 @@ pub(crate) async fn sync(
     ctx: SyncCtx,
     op: SyncOp,
     show_msgs: bool,
+    task_removal: bool,
 ) -> Result<bool> {
     // Destructure ctx
     let SyncCtx {
@@ -181,6 +182,7 @@ pub(crate) async fn sync(
             task_container,
             Arc::clone(&config),
             Arc::clone(&pm),
+            task_removal
         )
         .await?;
     }
@@ -859,6 +861,7 @@ async fn remove_obsolete_tasks(
     mut task_container: DeployPhaseTasks,
     config: Arc<DotdeployConfig>,
     pm: Arc<PrivilegeManager>,
+    task_removal: bool,
 ) -> Result<DeployPhaseTasks> {
     let mut set = JoinSet::new();
     for module in modules.into_iter() {
@@ -911,16 +914,19 @@ async fn remove_obsolete_tasks(
                 "its definiton has"
             }
         );
-
-        let mut obsolete_tasks = DeployPhaseTasks {
-            tasks: obsolete_tasks,
-        };
-        obsolete_tasks
-            .exec_pre_tasks(&pm, &config, DeployPhase::Remove)
-            .await?;
-        obsolete_tasks
-            .exec_post_tasks(&pm, &config, DeployPhase::Remove)
-            .await?;
+        if task_removal {
+            let mut obsolete_tasks = DeployPhaseTasks {
+                tasks: obsolete_tasks,
+            };
+            obsolete_tasks
+                .exec_pre_tasks(&pm, &config, DeployPhase::Remove)
+                .await?;
+            obsolete_tasks
+                .exec_post_tasks(&pm, &config, DeployPhase::Remove)
+                .await?;
+        } else {
+            warn!("Skipping removal action as requested");
+        }
 
         info!("Finished removal of obsolete tasks")
     }

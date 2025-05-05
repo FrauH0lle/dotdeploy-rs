@@ -348,6 +348,12 @@ pub(crate) fn build_cli() -> Command {
                        .help("Show deployment messages"),
                )
                .arg(
+                   Arg::new("skip_task_removal")
+                       .long("skip-task-removal")
+                       .action(ArgAction::SetFalse)
+                       .help("Do not run REMOVE action for obsolete tasks"),
+               )
+               .arg(
                    Arg::new("modules")
                        .value_name("MODULE")
                        .num_args(1..)
@@ -436,6 +442,7 @@ pub(crate) enum Commands {
         components: Vec<SyncComponent>,
         host: bool,
         show_messages: bool,
+        skip_task_removal: bool,
         modules: Option<Vec<String>>,
     },
     Validate,
@@ -478,7 +485,8 @@ impl Commands {
                     .map(|v| v.cloned().collect())
                     .unwrap_or_default(),
                 host: sync_matches.get_flag("host"),
-                show_messages: sync_matches.get_flag("show-messages"),
+                show_messages: sync_matches.get_flag("show_messages"),
+                skip_task_removal: sync_matches.get_flag("skip_task_removal"),
                 modules: sync_matches
                     .get_many::<String>("modules")
                     .map(|v| v.cloned().collect()),
