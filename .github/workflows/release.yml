@@ -28,6 +28,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
+          export DATABASE_URL=sqlite://compile_db.sqlite
           cargo build --release --locked --verbose --target ${{ matrix.target }}
       - name: Check
         shell: bash
