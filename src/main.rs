@@ -142,15 +142,10 @@ fn init_config(cli: &ArgMatches) -> Result<config::DotdeployConfig> {
 ///
 /// For nearly all configuration values, a corresponding environment variable will be set.
 fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) -> Result<()> {
-    let (name, version) = dotdeploy_config
-        .distribution
-        .split_once(':')
-        .ok_or_else(|| {
-            eyre!(
-                "Invalid distribution name format: {}",
-                dotdeploy_config.distribution
-            )
-        })?;
+    let (name, version) = match dotdeploy_config.distribution.split_once(':') {
+        Some((n, v)) => (n, v),
+        None => (dotdeploy_config.distribution.as_str(), ""),
+    };
 
     unsafe {
         std::env::set_var("DOD_DRY_RUN", dotdeploy_config.dry_run.to_string());
@@ -178,15 +173,10 @@ fn export_env_vars(dotdeploy_config: &config::DotdeployConfig) -> Result<()> {
 ///
 /// For nearly all configuration values, a corresponding environment variable will be set.
 fn setup_context(dotdeploy_config: &config::DotdeployConfig) -> Result<HashMap<String, Value>> {
-    let (name, version) = dotdeploy_config
-        .distribution
-        .split_once(':')
-        .ok_or_else(|| {
-            eyre!(
-                "Invalid distribution name format: {}",
-                dotdeploy_config.distribution
-            )
-        })?;
+    let (name, version) = match dotdeploy_config.distribution.split_once(':') {
+        Some((n, v)) => (n, v),
+        None => (dotdeploy_config.distribution.as_str(), ""),
+    };
 
     let mut context: HashMap<String, Value> = HashMap::new();
     context.insert(
