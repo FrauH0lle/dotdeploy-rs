@@ -408,6 +408,8 @@ FROM backups where path_u8 = ?1
 
         if write_dest != to.as_ref() {
             self.move_file_with_sudo(&write_dest, to.as_ref()).await?;
+            // Ensure temporary file is removed
+            fs::remove_file(&write_dest).await.ok();
         }
 
         Ok(())
@@ -429,12 +431,14 @@ FROM backups where path_u8 = ?1
         &self,
         to: P,
     ) -> Result<(PathBuf, fs::File)> {
-        let temp_file = tempfile::NamedTempFile::new()?;
-
         match fs::File::create(&to).await {
             Ok(f) => Ok((to.as_ref().to_path_buf(), f)),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                let temp_path = temp_file.path().to_path_buf();
+                let temp_file = tempfile::NamedTempFile::new()?;
+                // As soon as temp_file goes out of scope, its desctructor runs and deletes the
+                // file. However, we need to keep the file alive and make sure it gets removed
+                // manually.
+                let (_file, temp_path) = temp_file.keep()?;
                 let file = fs::File::create(&temp_path).await?;
                 Ok((temp_path, file))
             }

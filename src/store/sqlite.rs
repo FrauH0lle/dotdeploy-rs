@@ -257,7 +257,7 @@ impl Store for SQLiteStore {
             )
             .await?;
 
-        let result = match backup.file_type.as_str() {
+        match backup.file_type.as_str() {
             "link" => {
                 info!(
                     "Restoring {} backup to {}",
@@ -274,7 +274,33 @@ impl Store for SQLiteStore {
                     to.as_ref().display()
                 );
 
-                self.restore_regular_file_backup(&backup, &to).await
+                self.restore_regular_file_backup(&backup, &to).await?;
+
+                // Validate checksum after successful restoration
+                let restored_checksum = file_utils
+                    .calculate_sha256_checksum(&to)
+                    .await
+                    .wrap_err_with(|| {
+                        format!("Failed to verify restored file {}", to.as_ref().display())
+                    })?;
+
+                if let Some(expected_checksum) = backup.checksum {
+                    if restored_checksum != expected_checksum {
+                        return Err(eyre!(
+                            "Checksum mismatch for restored file {}: expected {}, got {}",
+                            to.as_ref().display(),
+                            expected_checksum,
+                            restored_checksum
+                        ));
+                    }
+                } else {
+                    return Err(eyre!(
+                        "Missing checksum in backup record for {}",
+                        to.as_ref().display()
+                    ));
+                }
+
+                Ok(())
             }
             "dummy" => Ok(()),
             invalid => Err(eyre!(
@@ -282,35 +308,7 @@ impl Store for SQLiteStore {
                 invalid,
                 file_path.as_ref().display()
             )),
-        };
-
-        // Validate checksum for regular files
-        if backup.file_type == "regular" {
-            let restored_checksum = file_utils
-                .calculate_sha256_checksum(&to)
-                .await
-                .wrap_err_with(|| {
-                    format!("Failed to verify restored file {}", to.as_ref().display())
-                })?;
-
-            if let Some(expected_checksum) = backup.checksum {
-                if restored_checksum != expected_checksum {
-                    return Err(eyre!(
-                        "Checksum mismatch for restored file {}: expected {}, got {}",
-                        to.as_ref().display(),
-                        expected_checksum,
-                        restored_checksum
-                    ));
-                }
-            } else {
-                return Err(eyre!(
-                    "Missing checksum in backup record for {}",
-                    to.as_ref().display()
-                ));
-            }
         }
-
-        result
     }
 
     // --

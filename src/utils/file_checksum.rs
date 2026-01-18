@@ -80,7 +80,7 @@ impl FileUtils {
             }
             // Propagate any other errors
             Err(e) => Err(e).wrap_err_with(|| {
-                format!("Falied to calculate checksum of {:?}", &path.as_ref())
+                format!("Failed to calculate checksum of {:?}", &path.as_ref())
             })?,
         };
 
