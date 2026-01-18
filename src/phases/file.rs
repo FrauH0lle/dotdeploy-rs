@@ -115,48 +115,71 @@ impl PhaseFile {
         // - It is already in the store
         //   - and source checksum in store and source checksum of file match
         //   - and target checksum in store and target checksum of file match
-        if source_store_checksum.as_ref() == source_file_checksum.as_ref()
-            && target_store_checksum.as_ref() == target_file_checksum.as_ref()
+        if source_store_checksum.as_ref() != source_file_checksum.as_ref()
+            || target_store_checksum.as_ref() != target_file_checksum.as_ref()
         {
-            debug!("{} deployed and up to date", self.target.display());
-            return Ok(());
-        }
-
-        // Backup file
-        if !store.check_backup_exists(&self.target).await? {
-            debug!("Creating backup of {}", &self.target.display());
-            if file_utils.check_path_exists(&self.target).await? {
-                store.add_backup(&self.target).await?
-            } else {
-                store.add_dummy_backup(&self.target).await?
+            // Backup file
+            if !store.check_backup_exists(&self.target).await? {
+                debug!("Creating backup of {}", &self.target.display());
+                if file_utils.check_path_exists(&self.target).await? {
+                    store.add_backup(&self.target).await?
+                } else {
+                    store.add_dummy_backup(&self.target).await?
+                }
             }
-        }
 
-        debug!(
-            "Trying to copy {} -> {}",
-            &source_file.display(),
-            &self.target.display()
-        );
+            debug!(
+                "Trying to copy {} -> {}",
+                &source_file.display(),
+                &self.target.display()
+            );
 
-        if self.template {
-            // If it's a template, render it to a temporary file first
-            let temp_file = tempfile::NamedTempFile::new()?;
-            let file_content = fs::read_to_string(source_file).await?;
-            let rendered = hb
-                .render_template(&file_content, context)
-                .wrap_err_with(|| format!("Failed to render template {}", source_file.display()))?;
-            fs::write(&temp_file, rendered).await?;
+            if self.template {
+                // If it's a template, render it to a temporary file first
+                let temp_file = tempfile::NamedTempFile::new()?;
+                let file_content = fs::read_to_string(source_file).await?;
+                let rendered = hb
+                    .render_template(&file_content, context)
+                    .wrap_err_with(|| {
+                        format!("Failed to render template {}", source_file.display())
+                    })?;
+                fs::write(&temp_file, rendered).await?;
 
-            file_utils.copy_file(temp_file.path(), &self.target).await?;
+                file_utils.copy_file(temp_file.path(), &self.target).await?;
+            } else {
+                // Otherwise just copy the file
+                file_utils.copy_file(source_file, &self.target).await?;
+            }
+
+            info!(
+                "Copied {} -> {}",
+                &source_file.display(),
+                &self.target.display()
+            );
+
+            store
+                .add_file(
+                    StoreFileBuilder::default()
+                        .with_module(&self.module_name)
+                        .with_source(Some(source_file.to_string_lossy().to_string()))
+                        .with_source_u8(Some(os_str_to_bytes(source_file)))
+                        .with_source_checksum(Some(
+                            file_utils.calculate_sha256_checksum(&source_file).await?,
+                        ))
+                        .with_target(self.target.to_string_lossy().to_string())
+                        .with_target_u8(os_str_to_bytes(&self.target))
+                        .with_target_checksum(Some(
+                            file_utils.calculate_sha256_checksum(&self.target).await?,
+                        ))
+                        .with_operation("copy")
+                        .with_user(Some(whoami::username()))
+                        .with_date(chrono::offset::Utc::now())
+                        .build()?,
+                )
+                .await?;
         } else {
-            // Otherwise just copy the file
-            file_utils.copy_file(source_file, &self.target).await?;
+            debug!("{} deployed and up to date", self.target.display());
         }
-        info!(
-            "Copied {} -> {}",
-            &source_file.display(),
-            &self.target.display()
-        );
 
         // Set metadata, if necessary
         file_utils
@@ -185,27 +208,6 @@ impl PhaseFile {
             )
             .await?;
 
-        store
-            .add_file(
-                StoreFileBuilder::default()
-                    .with_module(&self.module_name)
-                    .with_source(Some(source_file.to_string_lossy().to_string()))
-                    .with_source_u8(Some(os_str_to_bytes(source_file)))
-                    .with_source_checksum(Some(
-                        file_utils.calculate_sha256_checksum(&source_file).await?,
-                    ))
-                    .with_target(self.target.to_string_lossy().to_string())
-                    .with_target_u8(os_str_to_bytes(&self.target))
-                    .with_target_checksum(Some(
-                        file_utils.calculate_sha256_checksum(&self.target).await?,
-                    ))
-                    .with_operation("copy")
-                    .with_user(Some(whoami::username()))
-                    .with_date(chrono::offset::Utc::now())
-                    .build()?,
-            )
-            .await?;
-
         Ok(())
     }
 
@@ -218,42 +220,61 @@ impl PhaseFile {
 
         // A file should not be linked if:
         // - It is already in the store
+        //   - and the target file exists
         //   - and a link between source and target exists
-        if file_utils.check_path_exists(&self.target).await?
+        if !(store.check_file_exists(&self.target).await?)
+            && file_utils.check_path_exists(&self.target).await?
             && file_utils
                 .check_link_exists(&self.target, Some(source_file))
                 .await?
-            && store.check_file_exists(&self.target).await?
         {
-            debug!("{} deployed and up to date", self.target.display());
-            return Ok(());
-        }
-
-        // Backup file
-        if !store.check_backup_exists(&self.target).await? {
-            debug!("Creating backup of {}", &self.target.display());
-            if file_utils.check_path_exists(&self.target).await? {
-                store.add_backup(&self.target).await?
-            } else {
-                store.add_dummy_backup(&self.target).await?
+            // Backup file
+            if !store.check_backup_exists(&self.target).await? {
+                debug!("Creating backup of {}", &self.target.display());
+                if file_utils.check_path_exists(&self.target).await? {
+                    store.add_backup(&self.target).await?
+                } else {
+                    store.add_dummy_backup(&self.target).await?
+                }
             }
+
+            // Remove present file
+            file_utils.delete_file(&self.target).await?;
+
+            debug!(
+                "Trying to link {} -> {}",
+                &source_file.display(),
+                &self.target.display()
+            );
+
+            file_utils.link_file(source_file, &self.target).await?;
+            info!(
+                "Linked {} -> {}",
+                &source_file.display(),
+                &self.target.display()
+            );
+
+            store
+                .add_file(
+                    StoreFileBuilder::default()
+                        .with_module(&self.module_name)
+                        .with_source(Some(source_file.to_string_lossy().to_string()))
+                        .with_source_u8(Some(os_str_to_bytes(source_file)))
+                        .with_source_checksum(Some(
+                            file_utils.calculate_sha256_checksum(&source_file).await?,
+                        ))
+                        .with_target(self.target.to_string_lossy().to_string())
+                        .with_target_u8(os_str_to_bytes(&self.target))
+                        .with_target_checksum(None)
+                        .with_operation("link")
+                        .with_user(Some(whoami::username()))
+                        .with_date(chrono::offset::Utc::now())
+                        .build()?,
+                )
+                .await?;
+        } else {
+            debug!("{} deployed and up to date", self.target.display());
         }
-
-        // Remove present file
-        file_utils.delete_file(&self.target).await?;
-
-        debug!(
-            "Trying to link {} -> {}",
-            &source_file.display(),
-            &self.target.display()
-        );
-
-        file_utils.link_file(source_file, &self.target).await?;
-        info!(
-            "Linked {} -> {}",
-            &source_file.display(),
-            &self.target.display()
-        );
 
         // Set metadata, if necessary
         file_utils
@@ -275,25 +296,6 @@ impl PhaseFile {
                     symlink_source: None,
                     checksum: None,
                 },
-            )
-            .await?;
-
-        store
-            .add_file(
-                StoreFileBuilder::default()
-                    .with_module(&self.module_name)
-                    .with_source(Some(source_file.to_string_lossy().to_string()))
-                    .with_source_u8(Some(os_str_to_bytes(source_file)))
-                    .with_source_checksum(Some(
-                        file_utils.calculate_sha256_checksum(&source_file).await?,
-                    ))
-                    .with_target(self.target.to_string_lossy().to_string())
-                    .with_target_u8(os_str_to_bytes(&self.target))
-                    .with_target_checksum(None)
-                    .with_operation("link")
-                    .with_user(Some(whoami::username()))
-                    .with_date(chrono::offset::Utc::now())
-                    .build()?,
             )
             .await?;
 
