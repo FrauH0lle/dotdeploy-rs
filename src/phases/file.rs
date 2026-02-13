@@ -222,11 +222,11 @@ impl PhaseFile {
         // - It is already in the store
         //   - and the target file exists
         //   - and a link between source and target exists
-        if !(store.check_file_exists(&self.target).await?)
+        if !(store.check_file_exists(&self.target).await?
             && file_utils.check_path_exists(&self.target).await?
             && file_utils
                 .check_link_exists(&self.target, Some(source_file))
-                .await?
+                .await?)
         {
             // Backup file
             if !store.check_backup_exists(&self.target).await? {
