@@ -240,6 +240,11 @@ impl DotdeployModule {
             self.includes.get_or_insert_with(Vec::new).extend(includes);
         }
 
+        // Merge dependencies
+        if let Some(deps) = included.depends_on.take() {
+            self.depends_on.get_or_insert_with(Vec::new).extend(deps);
+        }
+
         // Merge other components
         if let Some(files) = included.files.take() {
             let targets: HashSet<_> = files.iter().map(|f| &f.target).collect();
