@@ -100,7 +100,7 @@ pub(crate) async fn sync(
 
     let mut mod_queue = ModulesQueueBuilder::new()
         .with_modules(modules)
-        .build(&config)?;
+        .build(&config, &mut context, &handlebars)?;
 
     // Add queued modules to context
     mod_queue
@@ -445,7 +445,12 @@ pub(crate) async fn sync(
                 .map(|m| m.name)
                 .collect::<Vec<_>>(),
         )
-        .build(&config)?;
+        .build(
+            &config,
+            Arc::get_mut(&mut context)
+                .ok_or_eyre("Failed to get exclusive mutable reference to Arc")?,
+            &hb,
+        )?;
 
     let module_names = file_gen_queue.get_module_names();
     file_gen_queue

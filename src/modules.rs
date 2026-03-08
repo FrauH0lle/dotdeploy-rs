@@ -47,6 +47,8 @@ pub(crate) struct DotdeployModule {
     pub(crate) packages: Option<Vec<ModulePackages>>,
     /// Key-value pairs used for handlebars templating
     pub(crate) context_vars: Option<HashMap<String, Value>>,
+    /// Whether includes have already been processed
+    includes_processed: bool,
 }
 
 /// Deployment phases for organizing module components
@@ -169,6 +171,11 @@ impl DotdeployModule {
         hb: &Handlebars<'static>,
     ) -> Result<()> {
         let mut processed_includes = Vec::new();
+        // Skip if includes have already been processed (e.g., during dependency resolution)
+        if self.includes_processed {
+            return Ok(());
+        }
+
         let mut pending_includes = self.includes.take().unwrap_or_default();
 
         while !pending_includes.is_empty() {
@@ -196,6 +203,7 @@ impl DotdeployModule {
 
         // Restore original includes list for potential future use
         self.includes = Some(processed_includes);
+        self.includes_processed = true;
         Ok(())
     }
 
@@ -469,6 +477,7 @@ impl DotdeployModuleBuilder {
             generators: self.generators.take(),
             packages: self.packages.take(),
             context_vars: self.context_vars.take(),
+            includes_processed: false,
         };
 
         Ok(module)

@@ -253,7 +253,7 @@ pub(crate) async fn remove(
     if !modules_left.is_empty() {
         let mut mod_queue = ModulesQueueBuilder::new()
             .with_modules(modules_left)
-            .build(&config)?;
+            .build(&config, &mut context, &handlebars)?;
 
         // Add queued modules to context
         mod_queue

@@ -817,7 +817,12 @@ impl ModulesQueueBuilder {
     /// # Errors
     /// Returns an error if any module cannot be loaded or if dependency
     /// resolution fails.
-    pub(crate) fn build(&mut self, dotdeploy_config: &DotdeployConfig) -> Result<ModulesQueue> {
+    pub(crate) fn build(
+        &mut self,
+        dotdeploy_config: &DotdeployConfig,
+        context: &mut HashMap<String, Value>,
+        hb: &Handlebars<'static>,
+    ) -> Result<ModulesQueue> {
         match self.modules {
             Some(ref modules) => {
                 let mut processed = HashMap::new();
@@ -831,6 +836,8 @@ impl ModulesQueueBuilder {
                         &mut processed,
                         &mut mod_queue,
                         Some("manual".to_string()),
+                        context,
+                        hb,
                     )?;
                 }
 
@@ -857,6 +864,8 @@ impl ModulesQueueBuilder {
         processed: &mut HashMap<String, String>,
         mod_queue: &mut Vec<DotdeployModule>,
         reason: Option<String>,
+        context: &mut HashMap<String, Value>,
+        hb: &Handlebars<'static>,
     ) -> Result<()> {
         let reason = reason.or_else(|| Some("automatic".to_string()));
 
@@ -878,8 +887,13 @@ impl ModulesQueueBuilder {
 
         // Build module configuration with correct reason
         let reason_str = reason.unwrap_or_else(|| "automatic".to_string());
-        let mod_conf = DotdeployModuleBuilder::from_toml(module_name, dotdeploy_config)?
+        let mut mod_conf = DotdeployModuleBuilder::from_toml(module_name, dotdeploy_config)?
             .build(reason_str.clone())?;
+
+        // Process includes early so that depends_on from included files is available
+        mod_conf.process_includes(context, hb).wrap_err_with(|| {
+            format!("Failed to process includes in module {}", module_name)
+        })?;
 
         // Update tracking with actual reason used
         processed.insert(module_name.to_string(), reason_str);
@@ -888,7 +902,7 @@ impl ModulesQueueBuilder {
         if let Some(dependencies) = &mod_conf.depends_on {
             for dep in dependencies {
                 // Dependencies should always be "automatic"
-                Self::process_module(dep, dotdeploy_config, processed, mod_queue, None)?;
+                Self::process_module(dep, dotdeploy_config, processed, mod_queue, None, context, hb)?;
             }
         }
 
@@ -1054,6 +1068,160 @@ mod tests {
                 m
             );
         }
+
+        Ok(())
+    }
+
+    /// Tests that `depends_on` defined in included config files is resolved during
+    /// module queue building, pulling dependent modules into the queue.
+    #[test]
+    fn test_depends_on_from_includes() -> Result<()> {
+        let dir = tempdir()?;
+        let modules_root = dir.path().join("modules");
+        let hosts_root = dir.path().join("hosts");
+
+        // Create the host module with an include
+        let host_dir = hosts_root.join("testhost");
+        std::fs::create_dir_all(&host_dir)?;
+        std::fs::write(
+            host_dir.join("config.toml"),
+            r#"
+[[includes]]
+files = ["deps.toml"]
+"#,
+        )?;
+        std::fs::write(
+            host_dir.join("deps.toml"),
+            r#"
+depends_on = ["dep_a", "dep_b"]
+"#,
+        )?;
+
+        // Create the dependency modules
+        for name in &["dep_a", "dep_b"] {
+            let mod_dir = modules_root.join(name);
+            std::fs::create_dir_all(&mod_dir)?;
+            // Minimal valid config
+            std::fs::write(mod_dir.join("config.toml"), "")?;
+        }
+
+        let config = DotdeployConfig {
+            modules_root,
+            hosts_root,
+            ..Default::default()
+        };
+
+        let mut context = HashMap::new();
+        let hb = Handlebars::new();
+
+        let queue = ModulesQueueBuilder::new()
+            .with_modules(vec!["hosts/testhost".to_string()])
+            .build(&config, &mut context, &hb)?;
+
+        let names: Vec<&str> = queue.modules.iter().map(|m| m.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"dep_a"),
+            "dep_a should be in queue via include's depends_on, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"dep_b"),
+            "dep_b should be in queue via include's depends_on, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"hosts/testhost"),
+            "host module itself should be in queue, got: {:?}",
+            names
+        );
+        // Dependencies should come before the module that depends on them
+        let dep_a_pos = names.iter().position(|n| *n == "dep_a").unwrap();
+        let dep_b_pos = names.iter().position(|n| *n == "dep_b").unwrap();
+        let host_pos = names.iter().position(|n| *n == "hosts/testhost").unwrap();
+        assert!(
+            dep_a_pos < host_pos,
+            "dep_a should be queued before hosts/testhost"
+        );
+        assert!(
+            dep_b_pos < host_pos,
+            "dep_b should be queued before hosts/testhost"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that conditional includes only pull in dependencies when the condition is met.
+    #[test]
+    fn test_depends_on_from_conditional_includes() -> Result<()> {
+        let dir = tempdir()?;
+        let modules_root = dir.path().join("modules");
+        let hosts_root = dir.path().join("hosts");
+
+        // Create the host module with conditional includes
+        let host_dir = hosts_root.join("testhost");
+        std::fs::create_dir_all(&host_dir)?;
+        std::fs::write(
+            host_dir.join("config.toml"),
+            r#"
+[[includes]]
+files = ["matched.toml"]
+if = "(eq MY_VAR 'yes')"
+
+[[includes]]
+files = ["unmatched.toml"]
+if = "(eq MY_VAR 'no')"
+"#,
+        )?;
+        std::fs::write(
+            host_dir.join("matched.toml"),
+            r#"
+depends_on = ["dep_matched"]
+"#,
+        )?;
+        std::fs::write(
+            host_dir.join("unmatched.toml"),
+            r#"
+depends_on = ["dep_unmatched"]
+"#,
+        )?;
+
+        // Create the dependency modules
+        for name in &["dep_matched", "dep_unmatched"] {
+            let mod_dir = modules_root.join(name);
+            std::fs::create_dir_all(&mod_dir)?;
+            std::fs::write(mod_dir.join("config.toml"), "")?;
+        }
+
+        let config = DotdeployConfig {
+            modules_root,
+            hosts_root,
+            ..Default::default()
+        };
+
+        let mut context = HashMap::new();
+        context.insert(
+            "MY_VAR".to_string(),
+            Value::String("yes".to_string()),
+        );
+        let hb = Handlebars::new();
+
+        let queue = ModulesQueueBuilder::new()
+            .with_modules(vec!["hosts/testhost".to_string()])
+            .build(&config, &mut context, &hb)?;
+
+        let names: Vec<&str> = queue.modules.iter().map(|m| m.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"dep_matched"),
+            "dep_matched should be in queue (condition met), got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"dep_unmatched"),
+            "dep_unmatched should NOT be in queue (condition not met), got: {:?}",
+            names
+        );
 
         Ok(())
     }
