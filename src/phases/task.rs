@@ -2,6 +2,7 @@ use crate::config::DotdeployConfig;
 use crate::logs::log_output;
 use crate::modules::{self, DeployPhase};
 use crate::utils::commands::exec_output;
+use crate::utils::file_fs::expand_path;
 use crate::utils::sudo::PrivilegeManager;
 use color_eyre::eyre::eyre;
 use color_eyre::{Report, Result};
@@ -139,15 +140,8 @@ impl PhaseTaskDefinition {
                     original_args
                         .iter()
                         .map(|arg| {
-                            shellexpand::path::full(arg)
-                                .map(|s| s.into_owned().into_os_string())
-                                .map_err(|e| {
-                                    eyre!(
-                                        "Failed to expand argument '{}': {}",
-                                        arg.to_string_lossy(),
-                                        e
-                                    )
-                                })
+                            expand_path(arg, None::<&std::collections::HashMap<String, OsString>>)
+                                .map(|p| p.into_os_string())
                         })
                         .collect::<Result<Vec<OsString>, Report>>()
                 })?

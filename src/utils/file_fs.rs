@@ -50,11 +50,19 @@ pub(crate) fn expand_path<P: AsRef<Path>, S: AsRef<OsStr>>(
         Ok(std::env::var_os(var))
     };
 
-    // Expand the path using shellexpand with custom context
-    let expanded = shellexpand::path::full_with_context(&path, home_dir, context)
-        .map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
-
-    Ok(PathBuf::from(expanded))
+    // Expand recursively to resolve nested variables in default values,
+    // e.g. ${XDG_BIN_HOME:-$HOME/.local/bin}
+    let mut current = PathBuf::from(path.as_ref());
+    loop {
+        let expanded =
+            shellexpand::path::full_with_context(&current, &home_dir, &context)
+                .map_err(|e| eyre!("Failed to expand path: {:?}", e))?;
+        let expanded = PathBuf::from(expanded);
+        if expanded == current {
+            return Ok(current);
+        }
+        current = expanded;
+    }
 }
 
 impl FileUtils {
@@ -509,6 +517,37 @@ mod tests {
         assert_eq!(
             expand_path::<&str, &str>("/absolute/path.txt", None)?,
             PathBuf::from("/absolute/path.txt")
+        );
+
+        // Test nested variable in default value: $HOME inside the default should be expanded
+        let mut env = HashMap::new();
+        env.insert("HOME".to_string(), home.to_str().ok_or_eyre("Invalid UTF-8")?.to_string());
+        assert_eq!(
+            expand_path("${NONEXISTENT_VAR:-$HOME/.local/bin}/tool", Some(&env))?,
+            PathBuf::from(format!(
+                "{}/.local/bin/tool",
+                home.to_str().ok_or_eyre("Invalid UTF-8")?
+            ))
+        );
+
+        // When the outer variable IS set, the default is not used
+        env.insert("NONEXISTENT_VAR".to_string(), "/custom/path".to_string());
+        assert_eq!(
+            expand_path("${NONEXISTENT_VAR:-$HOME/.local/bin}/tool", Some(&env))?,
+            PathBuf::from("/custom/path/tool")
+        );
+
+        // Nested default with system env (no custom env), simulating real TOML arg expansion
+        let result = expand_path::<&str, &str>(
+            "${SURELY_UNSET_VAR_12345:-$HOME/.local/bin}",
+            None,
+        )?;
+        assert_eq!(
+            result,
+            PathBuf::from(format!(
+                "{}/.local/bin",
+                home.to_str().ok_or_eyre("Invalid UTF-8")?
+            ))
         );
 
         Ok(())
