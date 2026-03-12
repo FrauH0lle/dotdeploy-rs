@@ -1,5 +1,5 @@
-use crate::store::sqlite::SQLiteStore;
 use crate::store::Store;
+use crate::store::sqlite::SQLiteStore;
 use crate::utils::common::bytes_to_os_str;
 use color_eyre::Result;
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// Returns errors if:
 /// * Store database access fails
 /// * Path byte conversion fails
-pub(crate) async fn lookup(file: PathBuf, store: Arc<SQLiteStore>) -> Result<bool> {
+pub(crate) async fn lookup(file: PathBuf, store: Arc<SQLiteStore>, raw: bool) -> Result<bool> {
     let res_file = store
         .get_file(&file)
         .await?
@@ -25,7 +25,12 @@ pub(crate) async fn lookup(file: PathBuf, store: Arc<SQLiteStore>) -> Result<boo
         .map(|source| PathBuf::from(bytes_to_os_str(source)))
         .unwrap_or(file);
 
-    // Use the debug representation to return the path in order to preserve non-UTF8 chars
-    println!("{:?}", res_file);
+    // Return the path in debug format if raw was requested to preserve non-UTF chars. Resulting
+    // output will be quoted.
+    if raw {
+        println!("{:?}", res_file);
+    } else {
+        println!("{}", res_file.into_os_string().display());
+    }
     Ok(true)
 }

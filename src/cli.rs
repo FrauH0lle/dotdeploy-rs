@@ -390,6 +390,12 @@ pub(crate) fn build_cli() -> Command {
                        .required(true)
                        .value_parser(value_parser!(PathBuf))
                        .help("File path to lookup"),
+               ).arg(
+                   Arg::new("raw")
+                       .long("raw")
+                       .value_parser(value_parser!(bool))
+                       .action(ArgAction::SetTrue)
+                       .help("Print path in raw format. Preserves non-UTF characters.")
                ),
        )
     // --
@@ -448,6 +454,7 @@ pub(crate) enum Commands {
     Validate,
     Lookup {
         file: PathBuf,
+        raw: bool,
     },
     Uninstall,
     Completions {
@@ -494,6 +501,7 @@ impl Commands {
             Some(("validate", _)) => Commands::Validate,
             Some(("lookup", lookup_matches)) => Commands::Lookup {
                 file: lookup_matches.get_one::<PathBuf>("file").unwrap().clone(),
+                raw: lookup_matches.get_flag("raw"),
             },
             Some(("uninstall", _)) => Commands::Uninstall,
             Some(("completions", completions_matches)) => Commands::Completions {

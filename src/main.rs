@@ -382,7 +382,7 @@ async fn run(
 
             cmds::update::update(modules, config, Arc::clone(&store), Arc::clone(&pm)).await
         }
-        cli::Commands::Lookup { file } => cmds::lookup::lookup(file, Arc::clone(&store)).await,
+        cli::Commands::Lookup { file , raw } => cmds::lookup::lookup(file, Arc::clone(&store), raw).await,
         cli::Commands::Sync {
             components,
             host,

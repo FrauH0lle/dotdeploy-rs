@@ -89,13 +89,16 @@ file path. Otherwise it will just return the input file path.
 ``` sh
 # Lookup file
 dotdeploy lookup /myfile.txt
+# => /home/user/.dotfiles/modules/module1/myfile.txt
+# The --raw flag can be used to escapt non-UTF characters, if necessary
+dotdeploy lookup --raw /myfile.txt
 # => "/home/user/.dotfiles/modules/module1/myfile.txt"
 
 # You can combine this with your favorite editor command to edit directly the
 # correct file:
+nano "$(dotdeploy lookup /myfile.txt)"
+# Or for --raw:
 nano "$(dotdeploy lookup /myfile.txt | tr -d '"')"
-# dotdeploy will return the filename in double quotes which usually need to be
-# removed.
 ```
 
 ### `uninstall`
