@@ -348,7 +348,7 @@ impl DotdeployModule {
                         return Err(eyre!(
                             "{}:command={}\n A task can be either a shell command OR an executable",
                             &self.location.display(),
-                            command_display.to_string_lossy()
+                            command_display.display()
                         ));
                     }
                 }

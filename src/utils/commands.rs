@@ -33,7 +33,7 @@ where
         .spawn()
         .wrap_err_with(|| {
             // Convert to strings ONLY if an error occurs
-            let cmd_str = cmd_os.to_string_lossy();
+            let cmd_str = cmd_os.display();
             let args_str: Vec<String> = args_os
                 .iter()
                 .map(|a| a.to_string_lossy().to_string())
@@ -50,7 +50,7 @@ where
 
     let status = run.wait().await.wrap_err_with(|| {
         // Convert to strings ONLY if an error occurs
-        let cmd_str = cmd_os.to_string_lossy();
+        let cmd_str = cmd_os.display();
         let args_str: Vec<String> = args_os
             .iter()
             .map(|a| a.to_string_lossy().to_string())

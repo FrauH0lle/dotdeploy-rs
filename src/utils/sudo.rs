@@ -264,7 +264,7 @@ impl PrivilegeManager {
                     debug!(
                         cmd = format!(
                             "{} {}",
-                            self.root_cmd.cmd().to_string_lossy(),
+                            self.root_cmd.cmd().display(),
                             format_args(self.root_cmd.initial_flags())
                         ),
                         "Executing privilege elevation command"
@@ -298,7 +298,7 @@ impl PrivilegeManager {
                                     debug!(
                                         cmd = format!(
                                             "{} {}",
-                                            sudo_clone.cmd().to_string_lossy(),
+                                            sudo_clone.cmd().display(),
                                             format_args(sudo_clone.termination_flags())
                                         ),
                                         "Terminating privilege refresh loop"
@@ -323,7 +323,7 @@ impl PrivilegeManager {
                                 debug!(
                                     cmd = format!(
                                         "{} {}",
-                                        sudo_clone.cmd().to_string_lossy(),
+                                        sudo_clone.cmd().display(),
                                         format_args(sudo_clone.keepalive_flags())
                                     ),
                                     "Privileges updated"
@@ -342,7 +342,7 @@ impl PrivilegeManager {
         } else {
             Err(eyre!(
                 "Use of '{}' is disabled. ",
-                self.root_cmd.cmd().to_string_lossy()
+                self.root_cmd.cmd().display()
             )
             .suggestion("Check the value of the variable `use_sudo` in your config file"))
         }
@@ -387,14 +387,14 @@ impl PrivilegeManager {
         } else {
             format!(
                 "Executing: {} {} {}",
-                self.root_cmd.cmd().to_string_lossy(),
-                cmd.as_ref().to_string_lossy(),
+                self.root_cmd.cmd().display(),
+                cmd.as_ref().display(),
                 format_args(&args_os)
             )
         };
 
         self.spawn_sudo_maybe(reason).await.wrap_err_with(|| {
-            format!("Failed to spawn {}", self.root_cmd.cmd().to_string_lossy())
+            format!("Failed to spawn {}", self.root_cmd.cmd().display())
         })?;
 
         let mut exec = tokio::process::Command::new(self.root_cmd.cmd())
@@ -404,8 +404,8 @@ impl PrivilegeManager {
             .wrap_err_with(|| {
                 format!(
                     "Failed to execute {} {} {}",
-                    self.root_cmd.cmd().to_string_lossy(),
-                    cmd.as_ref().to_string_lossy(),
+                    self.root_cmd.cmd().display(),
+                    cmd.as_ref().display(),
                     format_args(&args_os)
                 )
             })?;
@@ -444,7 +444,7 @@ impl PrivilegeManager {
         } else {
             format!(
                 "Executing: sudo {} {}",
-                cmd.as_ref().to_string_lossy(),
+                cmd.as_ref().display(),
                 format_args(&args_os)
             )
         };
@@ -500,7 +500,7 @@ fn update_sudo(sudo: &GetRootCmd) -> Result<()> {
     debug!(
         cmd = format!(
             "{} {}",
-            &sudo.cmd().to_string_lossy(),
+            &sudo.cmd().display(),
             format_args(sudo.keepalive_flags())
         ),
         "Updating privileges"

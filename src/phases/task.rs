@@ -129,7 +129,7 @@ impl PhaseTaskDefinition {
             } else {
                 Err(eyre!(
                     "Failed to execute {} from module {}",
-                    shell.to_string_lossy(),
+                    shell.display(),
                     module_name
                 ))
             }
@@ -153,7 +153,7 @@ impl PhaseTaskDefinition {
                 .map(|a| a.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let exec_display = format!("{} {}", exec.to_string_lossy(), args_display);
+            let exec_display = format!("{} {}", exec.display(), args_display);
 
             if self.sudo {
                 warn!("Executing `{}` with elevated permissions", exec_display);
