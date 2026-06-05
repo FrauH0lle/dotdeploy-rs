@@ -28,4 +28,8 @@ impl FileUtils {
     pub(crate) fn new(privilege_manager: Arc<PrivilegeManager>) -> Self {
         Self { privilege_manager }
     }
+
+    pub(crate) fn privilege_manager(&self) -> &PrivilegeManager {
+        &self.privilege_manager
+    }
 }

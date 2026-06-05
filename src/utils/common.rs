@@ -57,6 +57,35 @@ pub(crate) fn ask_boolean(prompt: &str) -> bool {
     buf.to_lowercase().starts_with('y')
 }
 
+/// Asks the user to choose from a set of single-character options.
+///
+/// Displays the prompt and reads a single character from stdin, validating it against the allowed
+/// options. Loops until a valid choice is given.
+///
+/// # Arguments
+///
+/// * `prompt` - The prompt string to display to the user.
+/// * `options` - A slice of valid single-character options.
+///
+/// # Returns
+///
+/// The chosen character (lowercase).
+pub(crate) fn ask_choice(prompt: &str, options: &[char]) -> char {
+    loop {
+        eprintln!("{}", prompt);
+        stdout().flush().expect("Failed to flush stdout");
+        let mut buf = String::new();
+        stdin()
+            .read_line(&mut buf)
+            .expect("Failed to read line from stdin");
+        let trimmed = buf.trim().to_lowercase();
+        if let Some(ch) = trimmed.chars().next() && options.contains(&ch) {
+            return ch;
+        }
+        eprintln!("Invalid choice. Please enter one of: {:?}", options);
+    }
+}
+
 // From https://users.rust-lang.org/t/how-to-safely-store-a-path-osstring-in-a-sqllite-database/79712/10
 #[cfg(unix)]
 pub fn os_str_to_bytes<S: AsRef<OsStr>>(string: S) -> Vec<u8> {

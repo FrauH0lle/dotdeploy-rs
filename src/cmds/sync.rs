@@ -1,10 +1,11 @@
 use crate::cli::SyncComponent;
 use crate::cmds::common;
+use crate::cmds::validate::{ValidationMode, validate_deployed_files_interactively};
 use crate::config::DotdeployConfig;
 use crate::errors;
 use crate::modules::DeployPhase;
 use crate::modules::queue::{ModulesQueue, ModulesQueueBuilder};
-use crate::phases::DeployPhaseTasks;
+use crate::phases::{DeployPhaseFiles, DeployPhaseTasks};
 use crate::store::Store;
 use crate::store::sqlite::SQLiteStore;
 use crate::store::sqlite_files::StoreFile;
@@ -98,9 +99,11 @@ pub(crate) async fn sync(
     let sync_packages = components.iter().any(|c| c.is_packages() || c.is_all());
     let show_messages = show_msgs;
 
-    let mut mod_queue = ModulesQueueBuilder::new()
-        .with_modules(modules)
-        .build(&config, &mut context, &handlebars)?;
+    let mut mod_queue = ModulesQueueBuilder::new().with_modules(modules).build(
+        &config,
+        &mut context,
+        &handlebars,
+    )?;
 
     // Add queued modules to context
     mod_queue
@@ -182,7 +185,7 @@ pub(crate) async fn sync(
             task_container,
             Arc::clone(&config),
             Arc::clone(&pm),
-            task_removal
+            task_removal,
         )
         .await?;
     }
@@ -226,41 +229,53 @@ pub(crate) async fn sync(
     }
 
     if sync_files {
-        // Validate deployed files
         let deployed_modules = store
             .get_all_modules()
             .await?
             .into_iter()
             .map(|m| m.name)
-            .collect::<HashSet<_>>();
+            .collect::<Vec<_>>();
 
-        let deployed_files = collect_deployed_files(deployed_modules, Arc::clone(&store)).await?;
-        let modified_files = validate_deployed_files(
+        // Clean up files whose source disappeared before reviewing modified targets. These are not
+        // conflicts the user can resolve through the validate UI.
+        let deployed_files =
+            collect_deployed_files(deployed_modules.clone(), Arc::clone(&store)).await?;
+        cleanup_deployed_files(
             deployed_files,
             Arc::clone(&config),
             Arc::clone(&pm),
             Arc::clone(&store),
+            DeployedFileCleanup::MissingSources,
         )
         .await?;
 
-        // Notify that files were modified outside of dotdeploy and ask for confirmation.
-        if !modified_files.is_empty() {
-            warn!(
-                "The following files were modified outside of dotdeploy:{}{}",
-                format!("\n  - {}", modified_files.join("\n  - ")),
-                "\n!! Changes will be overwritten !! \n"
-            );
-            if !(config.force
-                || crate::utils::common::ask_boolean(&format!(
-                    "{}\n{}",
-                    "Do you want to continue [y/N]?",
-                    "(You can skip this prompt with the CLI argument '-f/--force')",
-                )))
-            {
-                warn!("Aborted by user");
-                return Ok(false);
-            }
+        let sync_targets = collect_phase_file_targets(&setup_phase_files, &config_phase_files);
+        if !sync_targets.is_empty()
+            && !validate_deployed_files_interactively(
+                ValidationMode::SyncPreflight,
+                Arc::clone(&store),
+                &context,
+                &handlebars,
+                Arc::clone(&pm),
+                Some(&sync_targets),
+                config.force,
+            )
+            .await?
+        {
+            warn!("Aborted by user");
+            return Ok(false);
         }
+
+        // Clean up generated/create targets after review; sync will recreate them during deployment.
+        let deployed_files = collect_deployed_files(deployed_modules, Arc::clone(&store)).await?;
+        cleanup_deployed_files(
+            deployed_files,
+            Arc::clone(&config),
+            Arc::clone(&pm),
+            Arc::clone(&store),
+            DeployedFileCleanup::GeneratedFiles,
+        )
+        .await?;
     }
 
     // Wrap handlebars and context in an Arc as they will be shared across threads
@@ -558,6 +573,24 @@ pub(crate) async fn sync(
     Ok(true)
 }
 
+#[derive(Clone, Copy)]
+enum DeployedFileCleanup {
+    MissingSources,
+    GeneratedFiles,
+}
+
+fn collect_phase_file_targets(
+    setup_phase_files: &DeployPhaseFiles,
+    config_phase_files: &DeployPhaseFiles,
+) -> HashSet<String> {
+    setup_phase_files
+        .files
+        .iter()
+        .chain(config_phase_files.files.iter())
+        .map(|file| file.target.to_string_lossy().to_string())
+        .collect()
+}
+
 /// Collects all deployed files from store for given modules
 ///
 /// Queries database in parallel to gather all tracked files for specified modules
@@ -594,26 +627,17 @@ where
     Ok(deployed_files)
 }
 
-/// Validates integrity of deployed files against store records
-///
-/// Performs following checks in parallel:
-/// 1. Verifies source files still exist for copied files
-/// 2. Removes dynamically generated files (created during deployment)
-/// 3. Compares checksums against stored values for modifications
-///
-/// * `deployed_files` - Iterator of store file records to validate
-/// * `config` - Application configuration for deletion parameters  
-/// * `pm` - Privilege manager for filesystem operations
-/// * `store` - Database connection for checksum verification
+/// Cleans up stale deployed file records before redeployment.
 ///
 /// # Errors
 /// Returns error if filesystem operations fail or database access issues occur
-async fn validate_deployed_files<I>(
+async fn cleanup_deployed_files<I>(
     deployed_files: I,
     config: Arc<DotdeployConfig>,
     pm: Arc<PrivilegeManager>,
     store: Arc<SQLiteStore>,
-) -> Result<Vec<String>>
+    cleanup: DeployedFileCleanup,
+) -> Result<()>
 where
     I: IntoIterator<Item = StoreFile>,
 {
@@ -628,7 +652,9 @@ where
             let guard = Arc::clone(&guard);
             async move {
                 // Check if source still exists
-                if let Some(ref source) = file.source {
+                if matches!(cleanup, DeployedFileCleanup::MissingSources)
+                    && let Some(ref source) = file.source
+                {
                     if !file_utils.check_path_exists(source).await? {
                         info!(
                             "Source file {} does not exist anymore, removing deployed target {}",
@@ -654,8 +680,11 @@ where
                     }
                 }
 
-                // Always remove dynamically created files
-                if file.operation.as_str() == "create" || file.operation.as_str() == "generate" {
+                // Always remove dynamically created files before redeploying them
+                if matches!(cleanup, DeployedFileCleanup::GeneratedFiles)
+                    && (file.operation.as_str() == "create"
+                        || file.operation.as_str() == "generate")
+                {
                     debug!(
                         "Removing deployed target for dynamically created file {}",
                         &file.target
@@ -678,29 +707,14 @@ where
                         .await?
                 }
 
-                let mut modified_files = vec![];
-                // Check if target was modified
-                if file_utils.check_path_exists(&file.target).await? {
-                    let file_checksum = file_utils.calculate_sha256_checksum(&file.target).await?;
-                    let store_checksum = store.get_target_checksum(&file.target).await?;
-                    if let Some(store_checksum) = store_checksum.target_checksum {
-                        if file_checksum != store_checksum {
-                            modified_files.push(file.target);
-                        }
-                    }
-                }
-
-                Ok::<_, Report>(modified_files)
+                Ok::<_, Report>(())
             }
         });
     }
 
-    let modified_files = crate::errors::join_errors(set.join_all().await)?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    crate::errors::join_errors(set.join_all().await)?;
 
-    Ok(modified_files)
+    Ok(())
 }
 
 /// Ensures modules are properly registered in the store

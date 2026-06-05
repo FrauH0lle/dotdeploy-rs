@@ -2,7 +2,7 @@
 
 use clap::builder::{EnumValueParser, FalseyValueParser, TypedValueParser};
 use clap::{
-    Arg, ArgAction, ArgMatches, Command, ValueEnum, crate_name, crate_version, value_parser,
+    crate_name, crate_version, value_parser, Arg, ArgAction, ArgMatches, Command, ValueEnum,
 };
 use clap_complete::Shell;
 use std::env;
@@ -93,7 +93,11 @@ pub(crate) fn build_cli() -> Command {
                 .global(true)
                 .env("DOD_DRY_RUN")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Show what would happen without making changes - NOT IMPLEMENTED"),
@@ -103,7 +107,11 @@ pub(crate) fn build_cli() -> Command {
                 .long("ask")
                 .global(true)
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Prompt for confirmation [default]"),
@@ -116,7 +124,11 @@ pub(crate) fn build_cli() -> Command {
                 .global(true)
                 .env("DOD_YES")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Assume \"yes\" instead of prompting"),
@@ -128,7 +140,11 @@ pub(crate) fn build_cli() -> Command {
                 .global(true)
                 .env("DOD_FORCE")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Skip confirmations for destructive operations"),
@@ -138,7 +154,11 @@ pub(crate) fn build_cli() -> Command {
                 .long("no-force")
                 .global(true)
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Don't skip confirmations for destructive operations [default]"),
@@ -184,7 +204,11 @@ pub(crate) fn build_cli() -> Command {
                 .long("use-sudo")
                 .env("DOD_USE_SUDO")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Allow privilege elevation [default]"),
@@ -193,7 +217,11 @@ pub(crate) fn build_cli() -> Command {
             Arg::new("no_use_sudo")
                 .long("no-use-sudo")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Don't allow privilege elevation"),
@@ -209,7 +237,11 @@ pub(crate) fn build_cli() -> Command {
                 .long("deploy-sys-files")
                 .env("DOD_DEPLOY_SYS_FILES")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Deploy files to directories other than the user's HOME [default]"),
@@ -218,7 +250,11 @@ pub(crate) fn build_cli() -> Command {
             Arg::new("no_deploy_sys_files")
                 .long("no-deploy-sys-files")
                 .value_parser(FalseyValueParser::new().map(|b| -> u8 {
-                    if b { 1 } else { 0 }
+                    if b {
+                        1
+                    } else {
+                        0
+                    }
                 }))
                 .action(ArgAction::Count)
                 .help("Don't deploy files to directories other than the user's HOME"),
@@ -366,19 +402,7 @@ pub(crate) fn build_cli() -> Command {
     // * validate
        .subcommand(
            Command::new("validate")
-               .about("Validate deployment state and check for differences")
-               .arg(
-                   Arg::new("diff")
-                       .long("diff")
-                       .action(ArgAction::SetTrue)
-                       .help("Show detailed differences between source and deployed files"),
-               )
-               .arg(
-                   Arg::new("fix")
-                       .long("fix")
-                       .action(ArgAction::SetTrue)
-                       .help("Enter interactive fix mode for discrepancies"),
-               ),
+               .about("Validate deployment state and check for differences"),
        )
     // --
     // * lookup
@@ -553,7 +577,11 @@ pub(crate) fn flag_is_enabled(matches: &ArgMatches, on_flag: &str, off_flag: &st
     } else {
         // Neither was specified on command line, check environment variable
         let var = matches.get_count(on_flag) > 0;
-        if var { Some(var) } else { None }
+        if var {
+            Some(var)
+        } else {
+            None
+        }
     }
 }
 

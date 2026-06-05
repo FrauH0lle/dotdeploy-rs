@@ -416,7 +416,16 @@ async fn run(
             )
             .await
         }
-        cli::Commands::Validate => todo!(),
+        cli::Commands::Validate => {
+            cmds::validate::validate(
+                Arc::clone(&config),
+                Arc::clone(&store),
+                context,
+                handlebars,
+                Arc::clone(&pm),
+            )
+            .await
+        }
         cli::Commands::Uninstall => {
             let modules = store
                 .get_all_modules()
